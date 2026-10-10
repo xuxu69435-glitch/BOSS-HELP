@@ -1,0 +1,11 @@
+{
+  "name": "user",
+  "title": "待填写的个人资料",
+  "center_title": false,
+  "personal_info": {"items": [], "layout": "inline"},
+  "job_intention": null,
+  "modules": [],
+  "avatar": "",
+  "created_at": "",
+  "updated_at": ""
+}

@@ -1,0 +1,26 @@
+{
+  "query": "",
+  "extra_queries": [],
+  "count": 10,
+  "resume": "user",
+  "platform": "zhipin",
+  "max_pages": 10,
+  "max_details": 20,
+  "max_seconds": 300,
+  "rules": {
+    "city": [],
+    "target_roles": [],
+    "custom_role_keywords": [],
+    "graduation_year": null,
+    "bachelor_eligible": false,
+    "min_salary": null,
+    "min_daily_salary": null,
+    "recruitment_quotas": {"campus": 5, "internship": 5},
+    "history_dedupe": "job",
+    "allow_unspecified_cohort": false,
+    "allow_explicit_graduate_roles": false,
+    "require": [],
+    "exclude": [],
+    "exclude_company": []
+  }
+}
