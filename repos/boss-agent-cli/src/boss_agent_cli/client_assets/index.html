@@ -1,0 +1,70 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>岗位工作台</title>
+  <link rel="stylesheet" href="/assets/client.css">
+  <script defer src="/assets/lucide.min.js"></script>
+  <script defer src="/assets/profile.js"></script>
+  <script defer src="/assets/client.js"></script>
+</head>
+<body>
+  <header class="app-header">
+    <div class="brand"><span class="brand-icon"><i data-lucide="briefcase-business"></i></span><h1>岗位工作台</h1><span class="local-label">本机</span></div>
+    <nav class="main-nav" aria-label="主导航">
+      <button class="nav-button active" data-view="jobs"><i data-lucide="layout-list"></i>岗位审批</button>
+      <button class="nav-button" data-view="settings"><i data-lucide="sliders-horizontal"></i>筛选条件</button>
+      <button class="nav-button" data-view="profile"><i data-lucide="user-round-pen"></i>我的资料</button>
+      <button class="nav-button" data-view="events"><i data-lucide="history"></i>运行记录</button>
+    </nav>
+    <div class="session"><span id="session-state" class="session-state">读取连接状态</span><button id="check-browser" class="icon-button" title="检查Chrome连接" aria-label="检查Chrome连接"><i data-lucide="refresh-cw"></i></button><button id="connect" class="button small"><i data-lucide="plug"></i><span>连接 Chrome</span></button><button id="shutdown" class="icon-button" title="退出客户端" aria-label="退出客户端"><i data-lucide="power"></i></button></div>
+  </header>
+  <main>
+    <div id="notice" class="notice" hidden><i data-lucide="circle-alert"></i><div class="notice-body"><span id="notice-text"></span><div class="notice-actions"><button id="skip-wait" class="button small" hidden><i data-lucide="timer-reset"></i>跳过本机等待</button></div><details id="pause-details" hidden><summary>暂停依据</summary><dl id="pause-fields"></dl></details></div></div>
+    <div id="delivery-notice" class="notice" role="status" hidden><i data-lucide="circle-alert"></i><span id="delivery-notice-text"></span></div>
+    <div id="taskbar" class="taskbar" role="status" hidden><span class="activity-dot"></span><span id="task-label"></span><span id="task-message"></span><button id="stop-task" class="icon-button" title="停止当前任务" aria-label="停止当前任务"><i data-lucide="square"></i></button></div>
+    <section id="recheck-result" class="recheck-result" role="status" hidden><div class="recheck-heading"><h3 id="recheck-title"></h3><span id="recheck-time" class="muted"></span></div><p id="recheck-message"></p><p id="recheck-next" class="muted"></p></section>
+    <section id="view-jobs" class="view">
+      <div class="page-top"><div><div class="eyebrow">岗位与沟通</div><h2>审批队列</h2></div><div class="page-actions"><span id="model" class="model-label"></span><button id="prepare" class="button primary"><i data-lucide="plus"></i>生成新批次</button></div></div>
+      <div class="metrics" id="metrics"></div>
+      <div class="batch-toolbar"><label class="batch-select">当前批次<select id="batch-select" aria-label="当前批次"></select></label><span id="batch-meta" class="muted"></span><button id="resume" class="button small" hidden><i data-lucide="play"></i>继续本批</button><button id="draft" class="button small" hidden><i data-lucide="sparkles"></i>补齐招呼</button><button id="open-send" class="button send"><i data-lucide="send"></i>发送已批准</button></div>
+      <div class="workspace" id="workspace">
+        <section class="job-list" aria-label="岗位列表">
+          <div class="search-box"><i data-lucide="search"></i><input id="search" type="search" placeholder="搜索岗位、公司" aria-label="搜索岗位、公司"></div>
+          <div class="status-tabs" id="status-tabs"></div>
+          <div class="selection-bar"><label><input id="select-all" type="checkbox" aria-label="选择当前列表可处理岗位"><span id="selected-count">未选择</span></label><div><button id="bulk-reject" class="icon-button danger-text" title="拒绝所选" aria-label="拒绝所选"><i data-lucide="x"></i></button><button id="bulk-approve" class="button small"><i data-lucide="check"></i>批准所选</button></div></div>
+          <div id="job-rows" class="job-rows"></div>
+        </section>
+        <section id="detail" class="detail-panel" aria-label="岗位详情"></section>
+      </div>
+    </section>
+    <section id="view-settings" class="view" hidden>
+      <div class="page-top"><div><div class="eyebrow">本机偏好</div><h2>筛选条件</h2></div><div class="page-actions"><button id="reload-settings" class="icon-button" title="重新加载已保存条件" aria-label="重新加载条件"><i data-lucide="refresh-cw"></i></button><button id="save-settings" form="settings-form" class="button primary" type="submit"><i data-lucide="save"></i>保存条件</button></div></div>
+      <form id="settings-form" class="settings-form">
+        <section class="settings-section"><h3>批次数量与薪资</h3><div class="field-grid"><label>校招/应届岗位数<input name="campus_count" type="number" min="0" max="50" required></label><label>实习岗位数<input name="internship_count" type="number" min="0" max="50" required></label><label>全职月薪下限 / K<input name="min_salary" type="number" min="1" max="200" required></label><label>实习日薪下限 / 元<input name="min_daily_salary" type="number" min="1" max="5000" required></label></div><div class="eligibility-fields"><label>毕业届别<input name="graduation_year" type="number" min="2000" max="2100" required></label><label><input name="bachelor_eligible" type="checkbox">必须本科可申请</label><span id="quota-total" class="muted"></span></div><div class="checkbox-group"><label><input type="checkbox" name="allow_unspecified_cohort">纳入未注明届别的校招候选</label><label><input type="checkbox" name="allow_explicit_graduate_roles">纳入明确接受应届生的全职候选</label></div></section>
+        <section class="settings-section"><h3>目标城市（任一）</h3><div class="checkbox-group" id="city-options"></div><div class="inline-add"><select id="new-city" aria-label="添加城市"></select><button type="button" id="add-city" class="icon-button" title="添加城市" aria-label="添加城市"><i data-lucide="plus"></i></button></div></section>
+        <section class="settings-section"><h3>岗位方向（任一）</h3><div class="checkbox-group role-options" id="role-options"></div><label class="text-field">自定义方向关键词（任一）<textarea name="custom_role_keywords" rows="3" placeholder="请填写自己的岗位方向关键词，每行一个"></textarea></label></section>
+        <section class="settings-section"><h3>关键词与排除项</h3><div class="criteria-text-grid"><label class="text-field">必含关键词（全部）<textarea name="require" rows="4"></textarea></label><label class="text-field">排除关键词（任一）<textarea name="exclude" rows="4"></textarea></label><label class="text-field">排除公司（任一）<textarea name="exclude_company" rows="4"></textarea></label></div></section>
+        <section class="settings-section"><h3>历史去重</h3><div class="radio-group"><label><input type="radio" name="history_dedupe" value="job">按岗位</label><label><input type="radio" name="history_dedupe" value="company">按公司</label></div></section>
+        <section class="settings-section"><h3>运行方式</h3><div class="fixed-requirements"><span>完成优先</span><span>无任务总时限</span><span id="collection-budget"></span><span id="collection-interval"></span></div></section>
+      </form>
+    </section>
+    <section id="view-profile" class="view" hidden>
+      <div class="page-top"><div><div class="eyebrow">本机资料库</div><h2>我的资料</h2></div><div class="page-actions"><span id="profile-status" class="muted">未加载</span><button id="reload-profile" class="icon-button" title="重新加载已保存资料" aria-label="重新加载资料"><i data-lucide="refresh-cw"></i></button><button id="save-profile" form="profile-form" class="button primary" type="submit" disabled><i data-lucide="save"></i>保存资料</button></div></div>
+      <form id="profile-form" class="profile-form">
+        <section class="settings-section"><div class="profile-title-grid"><label class="text-field">姓名或资料标题<input id="profile-title" maxlength="160" required></label><div class="profile-source"><span>资料名称</span><strong id="profile-name"></strong><span id="profile-version" class="muted"></span></div></div></section>
+        <section class="settings-section"><div class="section-head"><h3>个人信息</h3><button type="button" class="button small" data-profile-action="add-info"><i data-lucide="plus"></i>新增字段</button></div><div id="profile-info"></div></section>
+        <section class="settings-section"><div class="section-head"><h3>求职与实习安排</h3><button type="button" class="button small" data-profile-action="add-intention"><i data-lucide="plus"></i>新增安排</button></div><div id="profile-intention"></div></section>
+        <section class="settings-section"><div class="section-head"><h3>经历与补充资料</h3><button type="button" class="button small" data-profile-action="add-module"><i data-lucide="plus"></i>新增模块</button></div><div id="profile-modules"></div></section>
+        <section class="settings-section"><details><summary>已保存的模型输入文本</summary><pre id="profile-preview" class="jd profile-preview"></pre></details></section>
+      </form>
+    </section>
+    <section id="view-events" class="view" hidden><div class="page-top"><div><div class="eyebrow">本机记录</div><h2>运行记录</h2></div><button id="refresh-events" class="icon-button" title="刷新记录" aria-label="刷新记录"><i data-lucide="refresh-cw"></i></button></div><div id="operation-log" class="operation-log"></div><div id="event-rows" class="event-rows"></div></section>
+  </main>
+  <footer><span><span class="connection-dot"></span><span id="connection-text">本机连接</span></span><span>现有 Chrome · 仅招呼</span></footer>
+  <div id="toast" class="toast" role="status" hidden></div>
+  <dialog id="send-dialog"><div class="dialog-head"><h3>确认发送</h3><button id="close-send" class="icon-button" title="取消" aria-label="取消发送"><i data-lucide="x"></i></button></div><div class="send-limit"><strong id="send-count"></strong></div><p id="send-recheck" class="notice" hidden></p><div id="send-targets" class="send-targets"></div><div class="dialog-foot"><button id="cancel-send" class="button">取消</button><button id="execute-send" class="button primary"><i data-lucide="send"></i><span id="execute-send-label">确认发送</span></button></div></dialog>
+  <dialog id="recheck-dialog"><div class="dialog-head"><h3>跳过本机等待</h3><button id="close-recheck" class="icon-button" title="取消" aria-label="取消提前复查"><i data-lucide="x"></i></button></div><div class="dialog-copy"><p>立即发起一次登录与失败搜索页复查，仍遵守读取间隔。</p><p>不会忽略 BOSS 返回的错误，不会自动继续采集或发送。本轮暂停只能提前复查一次。</p></div><div class="dialog-foot"><button id="cancel-recheck" class="button">取消</button><button id="confirm-recheck" class="button primary"><i data-lucide="refresh-cw"></i>确认复查一次</button></div></dialog>
+</body>
+</html>
