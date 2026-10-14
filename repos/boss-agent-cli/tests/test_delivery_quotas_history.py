@@ -1,4 +1,4 @@
-"""Fixed campus/intern quotas and cross-batch preview deduplication."""
+"""Fixed campus/intern quotas and greeting-only deduplication."""
 
 from pathlib import Path
 from unittest.mock import Mock
@@ -128,25 +128,94 @@ def seed_prior(store, status):
 		store.save_draft(batch_id, 1, payload)
 	if status == "rejected":
 		store.review(batch_id, approve=set(), reject={1})
+	if status in {"approved", "sending", "uncertain", "not_sent", "sent"}:
+		store.review(batch_id, approve={1}, reject=set())
+	if status in {"sending", "uncertain", "not_sent", "sent"}:
+		store.claim(batch_id, 1)
+		if status == "sent":
+			receipt = FakePlatform().greet("sec-1", "job-1", payload["greeting"])["zpData"]["greeting_receipt"]
+			store.finish(batch_id, 1, status, receipt=receipt)
+		elif status != "sending":
+			store.finish(batch_id, 1, status)
+	return batch_id
 
 
-@pytest.mark.parametrize("status", ["draft", "pending", "rejected"])
-@pytest.mark.parametrize("scope,expected", [("job", ["job-2", "job-3"]), ("company", ["job-3"])])
-def test_history_dedupe_includes_unsent_previews(tmp_path, status, scope, expected):
+@pytest.mark.parametrize("status", ["draft", "pending", "rejected", "approved", "sending", "uncertain", "not_sent"])
+@pytest.mark.parametrize("scope", ["", "job", "company", "greeted"])
+def test_history_dedupe_keeps_jobs_without_confirmed_greetings(tmp_path, status, scope):
 	platform = platform_for([candidate(1, company="ACME 科技"), candidate(2, company="acme科技"), candidate(3)], [])
 	with DeliveryStore(tmp_path) as store, CacheStore(tmp_path / "cache.db") as cache:
-		seed_prior(store, status)
+		prior = seed_prior(store, status)
+		before = store.get(prior)
 		batch = run(store, cache, platform, params({"history_dedupe": scope}))
-		assert [item["job_id"] for item in batch["items"]] == expected
-		assert platform.details == expected
-		assert not store.attempted("job-1")
+		assert [item["job_id"] for item in batch["items"]] == ["job-1", "job-2", "job-3"]
+		assert platform.details == ["job-1", "job-2", "job-3"]
+		assert batch["stats"]["excluded"] == []
+		assert store.get(prior) == before
+		assert platform.sent == []
 
 
-def test_company_mode_keeps_at_most_one_company_in_current_batch(tmp_path):
+def test_legacy_company_mode_keeps_all_ungreeted_company_jobs(tmp_path):
 	platform = platform_for([candidate(1, company="Same"), candidate(2, company="Same"), candidate(3)], [])
 	with DeliveryStore(tmp_path) as store, CacheStore(tmp_path / "cache.db") as cache:
 		batch = run(store, cache, platform, params({"history_dedupe": "company"}))
-		assert [item["job_id"] for item in batch["items"]] == ["job-1", "job-3"]
+		assert [item["job_id"] for item in batch["items"]] == ["job-1", "job-2", "job-3"]
+		assert batch["stats"]["excluded"] == []
+		preview = Path(write_preview(store, batch["id"])).read_text(encoding="utf-8")
+		assert "仅跳过已打招呼的岗位" in preview
+		assert "以前入选过的公司不再入选" not in preview
+
+
+@pytest.mark.parametrize("record_source", ["delivery", "cache_job", "cache_security"])
+def test_only_greeted_job_is_skipped_and_same_company_remains(tmp_path, record_source):
+	platform = platform_for([candidate(1, company="Same"), candidate(2, company="Same"), candidate(3)], [])
+	with DeliveryStore(tmp_path) as store, CacheStore(tmp_path / "cache.db") as cache:
+		if record_source == "delivery":
+			seed_prior(store, "sent")
+		elif record_source == "cache_job":
+			cache.record_greet("rotated-security", "job-1")
+		else:
+			cache.record_greet("sec-1", "old-job-id")
+		batch = run(store, cache, platform, params({"history_dedupe": "company"}))
+		assert [item["job_id"] for item in batch["items"]] == ["job-2", "job-3"]
+		assert platform.details == ["job-2", "job-3"]
+		excluded = batch["stats"]["excluded"]
+		assert len(excluded) == 1 and excluded[0]["job_id"] == "job-1"
+		assert excluded[0]["reasons"] == ["已打招呼的岗位"]
+		assert excluded[0]["company"] == "Same"
+		assert excluded[0]["city"] == "北京" and excluded[0]["salary"] == "15-25K"
+		assert excluded[0]["removed_at"] > 0
+		assert not any("security_id" in row or "lid" in row for row in excluded)
+		assert platform.sent == []
+
+
+def test_clear_dedupe_history_keeps_other_exclusions_and_delivery_records(tmp_path):
+	with DeliveryStore(tmp_path) as store, CacheStore(tmp_path / "cache.db") as cache:
+		prior = seed_prior(store, "sent")
+		cache.record_greet("old-security", "job-1")
+		checkpoint = {"version": 2, "seen": ["job-1"], "queue": []}
+		stats = {"collected": 1, "excluded": [
+			{"job_id": "job-2", "reasons": ["历史批次已入选同一岗位"]},
+			{"title": "legacy", "reasons": ["历史批次或本批已入选同一公司"]},
+			{"job_id": "job-1", "reasons": ["已打招呼的岗位", "薪资低于下限"]},
+			{"title": "unrelated", "reasons": ["信息缺失:完整JD"]},
+		]}
+		store.collection_progress(prior, checkpoint, stats, "results_exhausted")
+		before = store.get(prior)
+		protected = ("attempts", "delivery_events", "message_receipts", "collection_checkpoints")
+		records = {table: list(map(tuple, store.db.execute(f"SELECT * FROM {table}"))) for table in protected}
+		for _ in range(100):
+			store.create(params())
+		assert prior not in {row["id"] for row in store.list_batches()}
+		assert store.clear_dedupe_history() == 3
+		after = store.get(prior)
+		assert after == {**before, "stats": {**stats, "excluded": [
+			{"job_id": "job-1", "reasons": ["薪资低于下限"]},
+			{"title": "unrelated", "reasons": ["信息缺失:完整JD"]},
+		]}}
+		assert {table: list(map(tuple, store.db.execute(f"SELECT * FROM {table}"))) for table in protected} == records
+		assert cache.is_greeted_job("job-1") and store.is_greeted_job("job-1")
+		assert store.clear_dedupe_history() == 0
 
 
 def test_three_hundred_is_accepted_but_lower_is_not(tmp_path):

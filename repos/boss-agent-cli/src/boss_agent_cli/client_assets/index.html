@@ -46,7 +46,7 @@
         <section class="settings-section"><h3>目标城市（任一）</h3><div class="checkbox-group" id="city-options"></div><div class="inline-add"><select id="new-city" aria-label="添加城市"></select><button type="button" id="add-city" class="icon-button" title="添加城市" aria-label="添加城市"><i data-lucide="plus"></i></button></div></section>
         <section class="settings-section"><h3>岗位方向（任一）</h3><div class="checkbox-group role-options" id="role-options"></div><label class="text-field">自定义方向关键词（任一）<textarea name="custom_role_keywords" rows="3" placeholder="请填写自己的岗位方向关键词，每行一个"></textarea></label></section>
         <section class="settings-section"><h3>关键词与排除项</h3><div class="criteria-text-grid"><label class="text-field">必含关键词（全部）<textarea name="require" rows="4"></textarea></label><label class="text-field">排除关键词（任一）<textarea name="exclude" rows="4"></textarea></label><label class="text-field">排除公司（任一）<textarea name="exclude_company" rows="4"></textarea></label></div></section>
-        <section class="settings-section"><h3>历史去重</h3><div class="radio-group"><label><input type="radio" name="history_dedupe" value="job">按岗位</label><label><input type="radio" name="history_dedupe" value="company">按公司</label></div></section>
+        <section class="settings-section"><h3>岗位去重</h3><p class="settings-hint muted">仅跳过已经打过招呼的岗位。未打招呼的历史岗位、同公司其他岗位均可入选。</p><p id="dedupe-summary" class="settings-hint muted" role="status"></p><div id="dedupe-history" class="dedupe-history" role="list" aria-label="已去重内容"></div></section>
         <section class="settings-section"><h3>运行方式</h3><div class="fixed-requirements"><span>完成优先</span><span>无任务总时限</span><span id="collection-budget"></span><span id="collection-interval"></span></div></section>
       </form>
     </section>

@@ -63,6 +63,26 @@ def test_loading_page_and_state_has_no_external_actions(http_client):
 	server.controller.start.assert_not_called()
 
 
+def test_dedupe_history_includes_empty_batches_and_legacy_records_without_private_fields(http_client):
+	browser, server, _ = http_client
+	with DeliveryStore(server.controller.data_dir) as store:
+		bid = store.create(server.controller.settings())
+		store.progress(bid, {"excluded": [
+			{"job_id": "removed-1", "title": "去重岗位", "company": "重复公司", "reasons": ["历史批次已入选同一岗位"], "removed_at": 100, "security_id": "private-history-security"},
+			{"job_id": "removed-1", "title": "去重岗位", "company": "重复公司", "reasons": ["重复岗位或已有沟通记录"], "removed_at": 101},
+			{"title": "旧版去重岗位", "reasons": ["历史批次或本批已入选同一公司"]},
+			{"title": "薪资不足岗位", "reasons": ["薪资低于下限"]},
+		]}, "page_limit")
+	response = browser.get("/api/state").raise_for_status()
+	state = response.json()
+	assert bid not in {row["id"] for row in state["batches"]}
+	assert len(state["dedupe_history"]) == 2
+	assert {row["title"] for row in state["dedupe_history"]} == {"去重岗位", "旧版去重岗位"}
+	assert all(row["batch_id"] == bid for row in state["dedupe_history"])
+	assert next(row for row in state["dedupe_history"] if row["title"] == "旧版去重岗位")["company"] == ""
+	assert "private-history-security" not in response.text
+
+
 def test_connect_and_legacy_login_only_request_existing_chrome(http_client):
 	browser, server, _ = http_client
 	server.controller.start = Mock()
@@ -261,6 +281,7 @@ def test_settings_change_keeps_prior_batch_snapshot(client):
 		}
 	)
 	assert controller.settings()["rules"]["min_daily_salary"] == 350
+	assert controller.settings()["rules"]["history_dedupe"] == "greeted"
 	assert controller.batch(batch_id)["params"]["rules"]["min_daily_salary"] == 300
 
 

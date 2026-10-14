@@ -20,7 +20,7 @@ from boss_agent_cli.api.zhipin_errors import EnvironmentRiskError, raise_if_envi
 from boss_agent_cli.bridge.client import BridgeRequestError
 from boss_agent_cli.cache.store import CacheStore
 from boss_agent_cli.campus_filters import campus_check, listing_recruitment_signal
-from boss_agent_cli.delivery_store import DeliveryStore, company_key
+from boss_agent_cli.delivery_store import DeliveryStore
 from boss_agent_cli.role_filters import ROLE_NAMES, role_check
 from boss_agent_cli.search_filters import parse_salary_range
 from boss_agent_cli.output import redact_sensitive_text
@@ -34,6 +34,13 @@ COLLECTION_POLICY = {
 	"detail_cache_seconds": 21600,
 }
 CLIENT_SEARCH_PAGE_WINDOW = 3
+
+
+def _dedupe_exclusion(job: dict[str, Any], reason: str) -> dict[str, Any]:
+	return {
+		**{key: job.get(key) or "" for key in ("job_id", "title", "company", "city", "salary")},
+		"reasons": [reason], "removed_at": time.time(),
+	}
 
 
 def client_collection_policy(saved: dict[str, Any] | None = None) -> dict[str, Any]:
@@ -185,7 +192,6 @@ def seed_batch_from_local(
 	quotas = rules.get("recruitment_quotas") or {}
 	limit = COLLECTION_POLICY["detail_cache_seconds"]
 	now = time.time()
-	history_jobs, history_companies = store.previous_selection_keys(batch_id)
 	previous = [store.get(row["id"]) for row in store.list_batches() if row["id"] != batch_id]
 	used_sources = {source for row in previous for source in row["params"].get("source_batches", [])}
 	sources = [
@@ -199,7 +205,6 @@ def seed_batch_from_local(
 		and all(item["status"] in {"draft", "pending"} for item in row["items"])
 	]
 	selected: set[str] = set()
-	companies: set[str] = set()
 	kinds = {"campus": 0, "internship": 0}
 	stats: dict[str, Any] = {
 		"pages": 0,
@@ -223,18 +228,12 @@ def seed_batch_from_local(
 			return
 		job = copy.deepcopy(original)
 		job_id = str(job.get("job_id") or "")
-		company = company_key(str(job.get("company") or ""))
-		if not job_id or not job.get("security_id") or not job.get("description") or job_id in selected:
+		if not job_id or not job.get("security_id") or not job.get("description"):
 			return
-		if store.attempted(job_id) or cache.is_contacted_job(job_id) or cache.is_greeted(job["security_id"]):
+		if job_id in selected:
 			return
-		if not source_id and job_id in history_jobs:
-			return
-		if (
-			rules.get("history_dedupe") == "company"
-			and company
-			and (company in companies or (not source_id and company in history_companies))
-		):
+		if store.is_greeted_job(job_id) or cache.is_greeted_job(job_id) or cache.is_greeted(job["security_id"]):
+			stats["excluded"].append(_dedupe_exclusion(job, "已打招呼的岗位"))
 			return
 		for key in (
 			"summary",
@@ -264,7 +263,6 @@ def seed_batch_from_local(
 		if source_id:
 			job["source_batch_id"] = source_id
 		selected.add(job_id)
-		companies.add(company)
 		kinds[kind] += 1
 		store.add(batch_id, len(selected), job)
 		stats.update(collected=len(selected), local_seeded=len(selected))
@@ -319,12 +317,11 @@ def collect_batch(
 	):
 		raise ValueError("秋招和实习配额必须是非负整数、合计等于批次总数，并设置毕业届别")
 	history_scope = rules.get("history_dedupe") or ""
-	if history_scope not in {"", "job", "company"}:
-		raise ValueError("历史去重范围必须是job或company")
-	history_jobs, history_companies = store.previous_selection_keys(batch_id) if history_scope else (set(), set())
-	selected_companies: set[str] = set()
+	if history_scope not in {"", "job", "company", "greeted"}:
+		raise ValueError("岗位去重仅支持已打招呼的岗位")
 	kind_counts = {"campus": 0, "internship": 0}
 	stats: dict[str, Any] = {"pages": 0, "seen": 0, "details": 0, "collected": 0, "excluded": []}
+	stats["excluded"] = copy.deepcopy(initial_batch["stats"].get("excluded", []))
 	stats.update(initial_batch["stats"] if checkpoint else {})
 	stats["collected"] = 0
 	stats.pop("last_error", None)
@@ -351,7 +348,6 @@ def collect_batch(
 		kind_counts[kind] += 1
 		stats["collected"] += 1
 		stats["internships"] += int(kind == "internship")
-		selected_companies.add(company_key(str(item["payload"].get("company") or "")))
 	stats.setdefault("searches", [])
 	policy = client_collection_policy(params.get("collection_policy")) if client_mode else params.get("collection_policy")
 	continue_after_cooldown = params.get("continue_after_cooldown") is True
@@ -372,7 +368,6 @@ def collect_batch(
 		kind = item.get("recruitment_kind")
 		if kind in kind_counts:
 			kind_counts[kind] += 1
-		selected_companies.add(company_key(str(item.get("company") or "")))
 		store.add(batch_id, stats["collected"], item)
 		if quotas:
 			logger.info(
@@ -598,22 +593,12 @@ def collect_batch(
 				if not job_id or not job["security_id"]:
 					stats["excluded"].append({"title": job["title"], "reasons": ["信息缺失:岗位标识"]})
 					continue
-				if (
-					job_id in seen
-					or cache.is_contacted_job(job_id)
-					or cache.is_greeted(job["security_id"])
-					or store.attempted(job_id)
-				):
-					stats["excluded"].append({"title": job["title"], "reasons": ["重复岗位或已有沟通记录"]})
+				if store.is_greeted_job(job_id) or cache.is_greeted_job(job_id) or cache.is_greeted(job["security_id"]):
+					stats["excluded"].append(_dedupe_exclusion(job, "已打招呼的岗位"))
+					continue
+				if job_id in seen:
 					continue
 				seen.add(job_id)
-				if history_scope and job_id in history_jobs:
-					stats["excluded"].append({"title": job["title"], "reasons": ["历史批次已入选同一岗位"]})
-					continue
-				company = company_key(str(job.get("company") or ""))
-				if history_scope == "company" and company and company in history_companies | selected_companies:
-					stats["excluded"].append({"title": job["title"], "reasons": ["历史批次或本批已入选同一公司"]})
-					continue
 				reasons, _ = filter_job(job, rules, full=False)
 				signal = listing_recruitment_signal(job)
 				if not reasons and signal is not None and signal in quotas and kind_counts[signal] >= quotas[signal]:
@@ -653,10 +638,6 @@ def collect_batch(
 						reasons = ["信息缺失:秋招或实习类别"]
 					elif kind_counts[kind] >= quotas[kind]:
 						reasons = [f"{'实习' if kind == 'internship' else '秋招'}配额已满"]
-				if not reasons and history_scope == "company":
-					company = company_key(str(job.get("company") or ""))
-					if company and company in history_companies | selected_companies:
-						reasons = ["历史批次或本批已入选同一公司"]
 				if reasons:
 					stats["excluded"].append({"title": job["title"], "reasons": reasons})
 					continue
@@ -1069,11 +1050,7 @@ def write_preview(store: DeliveryStore, batch_id: str) -> str:
 	if quotas := rules.get("recruitment_quotas"):
 		group = "校招/应届全职候选" if rules.get("allow_explicit_graduate_roles") else "秋招"
 		rule_lines.append(f"固定配额：{group}{quotas['campus']}个，实习{quotas['internship']}个；不足时不互相补数")
-	if scope := rules.get("history_dedupe"):
-		rule_lines.append(
-			"历史去重："
-			+ ("以前入选过的公司不再入选" if scope == "company" else "以前入选过的同一岗位不再入选，同公司新岗位可入选")
-		)
+	rule_lines.append("岗位去重：仅跳过已打招呼的岗位；未打招呼的历史岗位和同公司其他岗位可入选")
 
 	lines = [
 		f"# 岗位审批批次 {batch_id}",

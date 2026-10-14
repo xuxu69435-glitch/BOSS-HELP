@@ -16,7 +16,7 @@
     "min_salary": null,
     "min_daily_salary": null,
     "recruitment_quotas": {"campus": 5, "internship": 5},
-    "history_dedupe": "job",
+    "history_dedupe": "greeted",
     "allow_unspecified_cohort": false,
     "allow_explicit_graduate_roles": false,
     "require": [],

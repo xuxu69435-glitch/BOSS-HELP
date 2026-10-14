@@ -538,6 +538,11 @@ class CacheStore:
 		).fetchone()
 		return row is not None
 
+	def is_greeted_job(self, job_id: str) -> bool:
+		return self._conn.execute(
+			"SELECT 1 FROM greet_records WHERE job_id = ? LIMIT 1", (job_id,)
+		).fetchone() is not None
+
 	def is_contacted_job(self, job_id: str) -> bool:
 		"""Deduplicate reviewed outreach using the stable job ID, not securityId."""
 		return self._conn.execute(
