@@ -12,6 +12,9 @@ from pathlib import Path
 from typing import Any
 
 
+DEDUPE_REASONS = frozenset({"已打招呼的岗位", "重复岗位或已有沟通记录", "历史批次已入选同一岗位", "历史批次或本批已入选同一公司"})
+
+
 def snapshot_hash(payload: dict[str, Any]) -> str:
 	return hashlib.sha256(json.dumps(payload, sort_keys=True, ensure_ascii=False).encode()).hexdigest()
 
@@ -109,15 +112,35 @@ class DeliveryStore:
 			)
 		]
 
-	def previous_selection_keys(self, batch_id: str) -> tuple[set[str], set[str]]:
-		"""Include pending/rejected snapshots, not only previously contacted jobs."""
-		jobs, companies = set(), set()
-		for row in self.db.execute("SELECT job_id, payload FROM items WHERE batch_id != ?", (batch_id,)):
-			jobs.add(row["job_id"])
-			company = company_key(str(json.loads(row["payload"]).get("company") or ""))
-			if company:
-				companies.add(company)
-		return jobs, companies
+	def is_greeted_job(self, job_id: str) -> bool:
+		return self.db.execute(
+			"SELECT 1 FROM items WHERE job_id=? AND status='sent' LIMIT 1", (job_id,)
+		).fetchone() is not None
+
+	def clear_dedupe_history(self) -> int:
+		"""Clear exclusion details while preserving jobs, approvals and delivery records."""
+		removed = 0
+		with self.db:
+			self.db.execute("BEGIN IMMEDIATE")
+			for row in self.db.execute("SELECT id, stats FROM batches").fetchall():
+				stats = json.loads(row["stats"])
+				remaining = []
+				changed = False
+				for record in stats.get("excluded", []):
+					reasons = record.get("reasons", [])
+					if not any(reason in DEDUPE_REASONS for reason in reasons):
+						remaining.append(record)
+						continue
+					changed = True
+					removed += 1
+					if other := [reason for reason in reasons if reason not in DEDUPE_REASONS]:
+						remaining.append({**record, "reasons": other})
+				if changed:
+					stats["excluded"] = remaining
+					self.db.execute(
+						"UPDATE batches SET stats=? WHERE id=?", (json.dumps(stats, ensure_ascii=False), row["id"])
+					)
+		return removed
 
 	def progress(self, batch_id: str, stats: dict[str, Any], reason: str = "") -> None:
 		with self.db:

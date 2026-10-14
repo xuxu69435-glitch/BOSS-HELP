@@ -149,15 +149,17 @@ def test_incomplete_detail_is_not_cached(tmp_path, clock):
 		assert second["stats"]["search_cache_hits"] == 1 and second["stats"]["detail_cache_hits"] == 0
 
 
-def test_same_company_history_selection_is_still_excluded_from_cached_rows(tmp_path, clock):
+def test_same_company_history_selection_is_kept_from_cached_rows(tmp_path, clock):
 	platform = platform_for([candidate(1)], [])
 	options = settings()
 	options["rules"]["history_dedupe"] = "company"
 	with DeliveryStore(tmp_path) as store, CacheStore(tmp_path / "cache.db") as cache:
 		collect(store, cache, platform, options)
 		second = collect(store, cache, platform, options)
-		assert second["items"] == []
+		assert [item["job_id"] for item in second["items"]] == ["job-1"]
 		assert second["stats"]["network_requests"] == 0
+		assert second["stats"]["detail_cache_hits"] == 1
+		assert second["stats"]["excluded"] == []
 		assert platform.details == ["job-1"]
 
 

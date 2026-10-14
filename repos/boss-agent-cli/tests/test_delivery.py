@@ -353,12 +353,12 @@ def test_deterministic_rules(rules, job_data, expected):
 	assert bool(filter_job(job_data, rules, full=True)[0]) == expected
 
 
-def test_duplicate_stable_job_id_is_excluded_across_rotating_security_ids(tmp_path, environment):
+def test_greeted_job_is_excluded_across_rotating_security_ids_but_apply_only_is_kept(tmp_path, environment):
 	with CacheStore(tmp_path / "cache" / "boss_agent.db") as cache:
 		cache.record_greet("old-security", "job-1")
 		cache.record_apply("old-security-2", "job-2")
 	data = prepare(tmp_path, no_ai=True)
-	assert [item["job_id"] for item in data["items"]] == ["job-3", "job-4", "job-5"]
+	assert [item["job_id"] for item in data["items"]] == ["job-2", "job-3", "job-4"]
 
 
 def test_budget_stops_detail_requests(tmp_path, environment):

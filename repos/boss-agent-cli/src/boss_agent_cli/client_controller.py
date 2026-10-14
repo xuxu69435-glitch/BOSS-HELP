@@ -42,7 +42,7 @@ from boss_agent_cli.delivery import (
 	send_batch,
 	write_preview,
 )
-from boss_agent_cli.delivery_store import DeliveryStore
+from boss_agent_cli.delivery_store import DEDUPE_REASONS, DeliveryStore
 from boss_agent_cli.delivery_retry import retry_batch
 from boss_agent_cli.output import Logger, redact_sensitive_text
 from boss_agent_cli.platforms.zhipin import BossPlatform
@@ -62,6 +62,27 @@ def _terms(value: Any, label: str) -> list[str]:
 	if any(not isinstance(item, str) or not item.strip() or len(item) > 80 or any(char in item for char in "\r\n\0") for item in value):
 		raise ValueError(f"{label}必须是1至80字的单行文本")
 	return list(dict.fromkeys(item.strip() for item in value))
+
+
+def _dedupe_history(batches: list[dict[str, Any]]) -> list[dict[str, Any]]:
+	entries, seen = [], set()
+	for batch in batches:
+		for record in reversed(batch["stats"].get("excluded", [])):
+			reasons = [reason for reason in record.get("reasons", []) if reason in DEDUPE_REASONS]
+			if not reasons:
+				continue
+			job_id = record.get("job_id")
+			if job_id:
+				key = (batch["id"], job_id)
+				if key in seen:
+					continue
+				seen.add(key)
+			entries.append({
+				**{key: record.get(key) or "" for key in ("title", "company", "city", "salary")},
+				"reasons": reasons, "batch_id": batch["id"],
+				"removed_at": record.get("removed_at") or batch["created_at"],
+			})
+	return sorted(entries, key=lambda record: record["removed_at"], reverse=True)
 
 
 def pause_message(diagnostic: dict[str, Any]) -> str:
@@ -350,6 +371,7 @@ class ClientController(Logger):
 	def settings(self) -> dict[str, Any]:
 		params = json.loads(self.settings_path.read_text(encoding="utf-8"))
 		params["completion_first"] = True
+		params["rules"]["history_dedupe"] = "greeted"
 		return params
 
 	@staticmethod
@@ -437,6 +459,7 @@ class ClientController(Logger):
 				"settings": settings,
 				"settings_revision": self._settings_revision(settings),
 				"batches": visible,
+				"dedupe_history": _dedupe_history(batches),
 				"model": model,
 				"roles": ROLE_NAMES,
 				"cities": list(endpoints.CITY_CODES),
@@ -492,8 +515,6 @@ class ClientController(Logger):
 			bachelor = body.get("bachelor_eligible", params["rules"].get("bachelor_eligible", True))
 			if type(year) is not int or not 2000 <= year <= 2100 or type(bachelor) is not bool:
 				raise ValueError("毕业届别或本科资格条件无效")
-			if body.get("history_dedupe") not in {"job", "company"}:
-				raise ValueError("请选择历史去重范围")
 			params.update(count=total, **{key: body[key] for key in ("max_pages", "max_details", "max_seconds") if key in body})
 			params["rules"].pop("max_internship_ratio", None)
 			params["rules"].update(
@@ -502,7 +523,7 @@ class ClientController(Logger):
 				custom_role_keywords=custom, graduation_year=year, bachelor_eligible=bachelor,
 				min_salary=body["min_salary"],
 				min_daily_salary=body["min_daily_salary"],
-				history_dedupe=body["history_dedupe"],
+				history_dedupe="greeted",
 				recruitment_quotas={"campus": body["campus_count"], "internship": body["internship_count"]},
 			)
 			for key, label in (("require", "必含关键词"), ("exclude", "排除关键词"), ("exclude_company", "排除公司")):

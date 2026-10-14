@@ -72,11 +72,12 @@ def test_unfinished_source_is_preserved_and_can_only_be_carried_once(tmp_path):
 		assert store.get(bid)["params"]["source_batches"] == [source]
 		assert all("greeting" not in item["payload"] for item in store.get(bid)["items"])
 		next_id = store.create(options(2))
-		assert seed_batch_from_local(store, next_id, cache, Mock()) == 0
+		assert seed_batch_from_local(store, next_id, cache, Mock()) == 1
+		assert store.get(next_id)["items"][0]["job_id"] == "cached-2"
 
 
-@pytest.mark.parametrize("status", ["approved", "uncertain", "sent"])
-def test_reviewed_or_attempted_work_is_never_repackaged(tmp_path, status):
+@pytest.mark.parametrize("status,expected", [("approved", 1), ("uncertain", 1), ("sent", 0)])
+def test_local_facts_only_skip_confirmed_greetings(tmp_path, status, expected):
 	with DeliveryStore(tmp_path) as store, CacheStore(tmp_path / "cache.db") as cache:
 		source = store.create(options(2))
 		job = fact(1)
@@ -90,9 +91,48 @@ def test_reviewed_or_attempted_work_is_never_repackaged(tmp_path, status):
 				with store.db:
 					store.db.execute("UPDATE items SET status='sent' WHERE batch_id=?", (source,))
 		cache_fact(cache, 1)
+		before = store.get(source)
+		bid = store.create(options(2))
+		assert seed_batch_from_local(store, bid, cache, Mock()) == expected
+		assert store.get(bid)["params"]["source_batches"] == []
+		assert store.get(source) == before
+		assert all("greeting" not in item["payload"] for item in store.get(bid)["items"])
+
+
+def test_local_greeting_exclusions_survive_subsequent_collection(tmp_path):
+	with DeliveryStore(tmp_path) as store, CacheStore(tmp_path / "cache.db") as cache:
+		source = store.create(options(2))
+		store.add(source, 1, fact(1))
+		cache.record_greet("rotated-security", "cached-1")
+		cache_fact(cache, 1)
 		bid = store.create(options(2))
 		assert seed_batch_from_local(store, bid, cache, Mock()) == 0
-		assert store.get(bid)["params"]["source_batches"] == []
+		records = store.get(bid)["stats"]["excluded"]
+		assert records[0]["company"] == "Fixture 1"
+		assert records[0]["reasons"] == ["已打招呼的岗位"]
+		platform = Mock()
+		platform.search_jobs.return_value = {"code": 0, "zpData": {"jobList": [], "hasMore": False}}
+		platform.is_success.return_value = True
+		platform.unwrap_data.side_effect = lambda response: response["zpData"]
+		collect_batch(store, bid, platform, cache, Mock())
+		assert store.get(bid)["stats"]["excluded"] == records
+		collect_batch(store, bid, platform, cache, Mock())
+		assert store.get(bid)["stats"]["excluded"] == records
+
+
+def test_rejected_local_job_and_same_company_jobs_can_be_selected_again(tmp_path):
+	with DeliveryStore(tmp_path) as store, CacheStore(tmp_path / "cache.db") as cache:
+		source = store.create(options(2))
+		store.add(source, 1, fact(1, company="Same"))
+		store.review(source, approve=set(), reject={1})
+		cache_fact(cache, 1, company="Same")
+		cache_fact(cache, 2, "internship", company="Same")
+		settings = options(2)
+		settings["rules"]["history_dedupe"] = "company"
+		bid = store.create(settings)
+		assert seed_batch_from_local(store, bid, cache, Mock()) == 2
+		assert {item["job_id"] for item in store.get(bid)["items"]} == {"cached-1", "cached-2"}
+		assert store.get(bid)["stats"]["excluded"] == []
 
 
 def test_cache_join_keeps_explicit_internship_type_from_list(tmp_path):
