@@ -20,6 +20,7 @@ from boss_agent_cli.api.zhipin_errors import EnvironmentRiskError, raise_if_envi
 from boss_agent_cli.bridge.client import BridgeRequestError
 from boss_agent_cli.cache.store import CacheStore
 from boss_agent_cli.campus_filters import campus_check, listing_recruitment_signal
+from boss_agent_cli.chat_delivery import ChatRecipientUnverified
 from boss_agent_cli.delivery_store import DeliveryStore
 from boss_agent_cli.delivery_verification import MessageVerificationError
 from boss_agent_cli.role_filters import ROLE_NAMES, role_check
@@ -946,6 +947,9 @@ def send_batch(
 			stage = str(getattr(exc, "delivery_stage", ""))
 			detail = redact_sensitive_text(str(exc))[:350]
 			store.finish(batch_id, item["number"], "uncertain", f"结果待核实，已跳过：{detail}", stage=stage)
+			continue
+		except ChatRecipientUnverified as exc:
+			store.finish(batch_id, item["number"], "not_sent", f"正文尚未提交，已跳过：{exc}", stage=exc.delivery_stage)
 			continue
 		except BaseException as exc:
 			stage = str(getattr(exc, "delivery_stage", ""))

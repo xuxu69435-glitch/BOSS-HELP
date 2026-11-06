@@ -219,6 +219,25 @@ def test_approval_queue_preserves_attempt_after_unconfirmed_write(tmp_path, setu
 		controller.close()
 
 
+def test_missing_recipient_after_contact_creation_skips_to_next_job(tmp_path, setup):
+	platform, state = setup
+	platform._friend = Mock(side_effect=lambda job_id: None if job_id == "fixture-job-1" else {
+		"uid": 22, "encryptJobId": job_id, "securityId": "fixture", "brandName": "Company", "name": "HR",
+	})
+	controller, batch_id = fixture_client(tmp_path)
+	try:
+		with DeliveryStore(tmp_path) as store, CacheStore(tmp_path / "cache.db") as cache:
+			store.review(batch_id, approve={1, 2}, reject=set())
+			assert send_batch(store, batch_id, platform, cache, limit=2, interval=0) == 1
+			first, second = store.get(batch_id)["items"]
+			assert first["status"] == "not_sent" and "已跳过" in first["error"]
+			assert second["status"] == "sent" and state["text"] == second["payload"]["greeting"]
+			assert state["requests"].count(("POST", endpoints.GREET_URL)) == 1
+			assert state["actions"].count("send-chat") == 1
+	finally:
+		controller.close()
+
+
 def test_missing_chat_page_does_not_consume_approval(tmp_path, setup):
 	platform, state = setup
 	state["path"] = "/web/geek/jobs"

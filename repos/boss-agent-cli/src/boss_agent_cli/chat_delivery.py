@@ -22,6 +22,10 @@ class ChatDeliveryError(RuntimeError):
 		super().__init__(message)
 
 
+class ChatRecipientUnverified(ChatDeliveryError):
+	"""The conversation was created, but its recipient could not be confirmed."""
+
+
 class VerifiedChatPlatform(BossPlatform):
 	"""Used by the durable approval queue, not the legacy direct-greet command."""
 
@@ -172,7 +176,7 @@ class VerifiedChatPlatform(BossPlatform):
 			self._stage, self._submitted = "read_created_contact", False
 			friend = self._friend(job_id)
 			if friend is None:
-				raise ChatDeliveryError("建立会话后尚未确认联系人，正文未发送；请在BOSS消息页核实。")
+				raise ChatRecipientUnverified("建立会话后尚未确认联系人，请在BOSS消息页核实。")
 		job = {"job_id": job_id, "greeting": message}
 		self._stage = "check_history"
 		history = self._history(friend)
