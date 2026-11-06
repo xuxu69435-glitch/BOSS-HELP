@@ -53,18 +53,23 @@ def test_unsupported_sender_is_blocked_before_claim(approved):
 	client.greet.assert_not_called()
 
 
-def test_code_zero_without_receipt_is_uncertain_and_stops_batch(approved):
+def test_code_zero_without_receipt_is_uncertain_and_next_job_is_sent(approved, monkeypatch):
 	controller, batch_id = approved
 	platform = FakePlatform()
-	platform.greet = Mock(return_value={"code": 0, "zpData": {"friendId": "fixture-person"}})
+	wait = Mock()
+	monkeypatch.setattr("boss_agent_cli.delivery.time.sleep", wait)
 	with DeliveryStore(controller.data_dir) as store, CacheStore(controller.data_dir / "test-cache.db") as cache:
-		with pytest.raises(ValueError, match="消息回执"):
-			send_batch(store, batch_id, platform, cache, limit=2, interval=0)
-		assert platform.greet.call_count == 1
-		assert [item["status"] for item in store.get(batch_id)["items"]] == ["uncertain", "approved"]
+		job = store.get(batch_id)["items"][1]["payload"]
+		platform.greet = Mock(side_effect=[
+			{"code": 0, "zpData": {"friendId": "fixture-person"}},
+			{"code": 0, "zpData": {"greeting_receipt": receipt_for(job)}},
+		])
+		assert send_batch(store, batch_id, platform, cache, limit=2, interval=10) == 1
+		wait.assert_called_once_with(10)
+		assert [item["status"] for item in store.get(batch_id)["items"]] == ["uncertain", "sent"]
 		assert store.attempted("fixture-job-1") and not cache.is_contacted_job("fixture-job-1")
 		assert send_batch(store, batch_id, platform, cache, limit=1, interval=0, allowed_numbers={1}) == 0
-		assert platform.greet.call_count == 1
+		assert platform.greet.call_count == 2
 
 
 @pytest.mark.parametrize(

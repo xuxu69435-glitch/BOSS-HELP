@@ -206,8 +206,11 @@ def test_success_requires_history_and_repeat_never_sends_twice(batch, monkeypatc
 @pytest.mark.parametrize("outcome", [None, TimeoutError("lost reply")])
 def test_unconfirmed_write_is_uncertain_and_cannot_be_replayed(batch, monkeypatch, outcome):
 	state = fake_transport(monkeypatch, outcome=outcome, confirmed=False)
-	with pytest.raises((ValueError, TimeoutError)):
-		run(batch)
+	if outcome is None:
+		assert run(batch)[0]["skipped"] is True
+	else:
+		with pytest.raises(TimeoutError):
+			run(batch)
 	with pytest.raises(ValueError, match="不会重新预填"):
 		run(batch)
 	assert state["actions"].count("send-chat") == 1

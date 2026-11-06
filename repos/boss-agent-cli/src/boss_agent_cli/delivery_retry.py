@@ -15,7 +15,7 @@ from boss_agent_cli.bridge.client import BROWSER_FAILURE_MESSAGES, BridgeClient,
 from boss_agent_cli.chat_delivery import VerifiedChatPlatform
 from boss_agent_cli.delivery import DeliveryError, write_preview
 from boss_agent_cli.delivery_store import DeliveryStore, company_key, snapshot_hash
-from boss_agent_cli.delivery_verification import history_confirms_absence, history_receipt
+from boss_agent_cli.delivery_verification import MessageVerificationError, history_confirms_absence, history_receipt
 from boss_agent_cli.output import redact_sensitive_text
 
 
@@ -77,6 +77,13 @@ def retry_batch(
 		if should_stop and should_stop():
 			raise DeliveryError("CANCELLED", "已停止核查与补发，未继续提交")
 
+	def record_skip(number: int, reason: str) -> None:
+		result = {"number": number, "verified": False, "skipped": True, "reason": reason}
+		results.append(result)
+		if logger:
+			logger.info(f"岗位 #{number} 结果待核实，已跳过：{reason}")
+		print(json.dumps(result, ensure_ascii=False), flush=True)
+
 	with (
 		DeliveryStore(data_dir) as store,
 		BossClient(AuthManager(data_dir), browser_source="existing-browser", delay=(6, 6)) as client,
@@ -110,11 +117,17 @@ def retry_batch(
 				friend for friend in friends if isinstance(friend, dict) and friend.get("encryptJobId") == job["job_id"]
 			]
 			if not matches:
+				if mode == "send":
+					record_skip(number, "在已读取的会话中未找到对应岗位")
+					continue
 				raise DeliveryError(
 					"CHAT_CONTACT_NOT_FOUND",
 					f"岗位{number}未在已读取的会话列表中找到，不能据此判断之前是否发送；未补发、未新建会话。可在BOSS核实，或拒绝该岗位停止后续发送。",
 				)
 			if len(matches) != 1:
+				if mode == "send":
+					record_skip(number, "岗位对应多个会话，无法确认收件人")
+					continue
 				raise DeliveryError("CHAT_CONTACT_AMBIGUOUS", f"岗位{number}对应多个既有会话，收件人不明确；不会补发或建立新会话")
 			friend = matches[0]
 			if (
@@ -123,6 +136,9 @@ def retry_batch(
 				or not friend.get("brandName")
 				or not friend.get("name")
 			):
+				if mode == "send":
+					record_skip(number, "会话缺少完整收件人身份")
+					continue
 				raise ValueError(f"岗位{number}缺少完整收件人身份")
 
 			def read_history() -> dict[str, Any]:
@@ -141,8 +157,17 @@ def retry_batch(
 					)
 				)
 
-			history = read_history()
-			receipt = history_receipt(job, friend, history)
+			def inspect_history() -> tuple[dict[str, str] | None, bool]:
+				history = read_history()
+				try:
+					receipt = history_receipt(job, friend, history)
+					return receipt, receipt is None and history_confirms_absence(job, friend, history)
+				except MessageVerificationError:
+					if mode != "send":
+						raise
+					return None, False
+
+			receipt, text_absent = inspect_history()
 			if receipt:
 				if item["status"] == "uncertain":
 					store.finish(batch_id, number, "sent", receipt=receipt)
@@ -156,7 +181,10 @@ def retry_batch(
 				results.append(result)
 				print(json.dumps(result, ensure_ascii=False), flush=True)
 				continue
-			if not history_confirms_absence(job, friend, history):
+			if not text_absent:
+				if mode == "send":
+					record_skip(number, "消息记录未能确认正文缺失")
+					continue
 				raise ValueError(f"岗位{number}的记录未能确认正文缺失，禁止盲目重发")
 			if mode == "check":
 				result = {"number": number, "company": job.get("company"), "text_absent": True, "submitted": False}
@@ -193,8 +221,7 @@ def retry_batch(
 				print(json.dumps(result, ensure_ascii=False), flush=True)
 				continue
 			# Recheck after prefill in case the user sent manually while we prepared.
-			history = read_history()
-			receipt = history_receipt(job, friend, history)
+			receipt, text_absent = inspect_history()
 			if receipt:
 				store.finish(batch_id, number, "sent", receipt=receipt)
 				write_preview(store, batch_id)
@@ -202,8 +229,9 @@ def retry_batch(
 				results.append(result)
 				print(json.dumps(result, ensure_ascii=False), flush=True)
 				continue
-			if not history_confirms_absence(job, friend, history):
-				raise ValueError("提交前的消息状态变化，已停止")
+			if not text_absent:
+				record_skip(number, "提交前未能确认正文缺失")
+				continue
 			if store.claim_retry(authorization_id, number) is None:
 				raise ValueError(f"岗位{number}已有未核实补发尝试，不会再次提交")
 			try:
@@ -214,15 +242,18 @@ def retry_batch(
 							authorization_id, number, "not_submitted", str(outcome.get("error") or "提交前停止")
 						)
 					else:
-						store.finish_retry(authorization_id, number, "uncertain", "提交结果不明")
+						raise MessageVerificationError("提交结果不明")
 					raise ValueError(f"岗位{number}未确认提交：{outcome.get('error') or '状态不明'}")
 				store.finish_retry(authorization_id, number, "submitted", "已触发页面发送，尚待服务器消息核验")
 				receipt = history_receipt(job, friend, read_history())
 				if not receipt:
-					store.finish_retry(authorization_id, number, "uncertain", "服务器记录中未找到匹配原文")
-					raise ValueError(f"岗位{number}尚无匹配消息回执，停止后续发送")
+					raise MessageVerificationError("服务器记录中未找到匹配原文")
 				store.finish(batch_id, number, "sent", receipt=receipt)
 				store.finish_retry(authorization_id, number, "verified", "服务器消息记录匹配收件人、岗位和原批准正文")
+			except MessageVerificationError as exc:
+				store.finish_retry(authorization_id, number, "uncertain", str(exc))
+				record_skip(number, str(exc))
+				continue
 			except BaseException as exc:
 				phase = store.db.execute(
 					"SELECT phase FROM retry_attempts WHERE authorization_id=? AND number=?", (authorization_id, number)

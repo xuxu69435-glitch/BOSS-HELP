@@ -8,7 +8,7 @@ from typing import Any
 from boss_agent_cli.api import endpoints
 from boss_agent_cli.api.zhipin_errors import EnvironmentRiskError
 from boss_agent_cli.bridge.client import BROWSER_FAILURE_MESSAGES, BridgeClient, BridgeRequestError
-from boss_agent_cli.delivery_verification import history_confirms_absence, history_receipt
+from boss_agent_cli.delivery_verification import MessageVerificationError, history_confirms_absence, history_receipt
 from boss_agent_cli.platforms.zhipin import BossPlatform
 
 
@@ -180,7 +180,7 @@ class VerifiedChatPlatform(BossPlatform):
 		if receipt:
 			return {"code": 0, "zpData": {"greeting_receipt": receipt, "already_present": True}}
 		if not history_confirms_absence(job, friend, history):
-			raise ChatDeliveryError("历史消息未能确认正文缺失，禁止盲目重发。")
+			raise MessageVerificationError("历史消息未能确认正文缺失，禁止盲目重发。")
 		target = {
 			"confirm": True,
 			"peer_id": str(friend["uid"]),
@@ -200,12 +200,12 @@ class VerifiedChatPlatform(BossPlatform):
 		if receipt:
 			return {"code": 0, "zpData": {"greeting_receipt": receipt, "already_present": True}}
 		if not history_confirms_absence(job, friend, history):
-			raise ChatDeliveryError("提交前消息状态变化，已停止。")
+			raise MessageVerificationError("提交前未能确认正文缺失。")
 		self._stage, self._submitted = "send-chat", None
 		if self._action("send-chat", target).get("submitted") is not True:
-			raise ChatDeliveryError("页面未确认提交，禁止自动重发。")
+			raise MessageVerificationError("页面未确认提交，禁止自动重发。")
 		self._stage, self._submitted = "verify_history", True
 		receipt = history_receipt(job, friend, self._history(friend))
 		if not receipt:
-			raise ChatDeliveryError("已尝试提交，但服务器记录中未找到原文，需核实，禁止自动重发。")
+			raise MessageVerificationError("已尝试提交，但服务器记录中未找到原文，需核实，禁止自动重发。")
 		return {"code": 0, "zpData": {"greeting_receipt": receipt}}

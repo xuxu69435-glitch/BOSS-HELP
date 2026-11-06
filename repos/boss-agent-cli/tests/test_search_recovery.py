@@ -14,7 +14,7 @@ from boss_agent_cli.delivery import COLLECTION_POLICY, collect_batch
 from boss_agent_cli.delivery_store import DeliveryStore
 from test_client_chrome_connection import chrome  # noqa: F401
 from test_collection_policy import clock  # noqa: F401
-from test_delivery_quotas_history import platform_for
+from test_delivery_quotas_history import candidate, platform_for
 
 
 def risk():
@@ -84,7 +84,8 @@ def test_verified_recovery_caches_exact_page_without_resuming_collection(chrome,
 	controller, bid, _, browser, _, _ = chrome
 	monkeypatch.setattr("boss_agent_cli.client_controller.time", clock)
 	pause(controller, bid, clock)
-	browser.request.side_effect = [{"code": 0}, {"code": 0, "zpData": {"jobList": [], "hasMore": False}}]
+	rows = [{**candidate(1), "salaryDesc": "1-2K"}]
+	browser.request.side_effect = [{"code": 0}, {"code": 0, "zpData": {"jobList": rows, "hasMore": False}}]
 	controller._run("connect", {})
 	assert controller._browser_state["status"] == "ready" and not controller._search_recovery_required()
 	assert controller.operation["status"] == "complete"

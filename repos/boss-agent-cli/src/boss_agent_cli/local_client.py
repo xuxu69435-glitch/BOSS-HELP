@@ -17,6 +17,7 @@ from urllib.parse import parse_qs, urlparse
 
 from boss_agent_cli.client_controller import ClientController
 from boss_agent_cli.api.managed_browser import _private_directory
+from boss_agent_cli.screenshot_ocr import MAX_OCR_REQUEST_BYTES, recognize_screenshot
 
 
 ASSETS = Path(__file__).with_name("client_assets")
@@ -24,6 +25,7 @@ FILES = {
 	"/": ("index.html", "text/html; charset=utf-8"),
 	"/assets/client.js": ("client.js", "text/javascript; charset=utf-8"),
 	"/assets/profile.js": ("profile.js", "text/javascript; charset=utf-8"),
+	"/assets/greeting.js": ("greeting.js", "text/javascript; charset=utf-8"),
 	"/assets/client.css": ("client.css", "text/css; charset=utf-8"),
 	"/assets/lucide.min.js": ("lucide.min.js", "text/javascript; charset=utf-8"),
 }
@@ -128,6 +130,8 @@ class ClientHandler(BaseHTTPRequestHandler):
 				self._write(200, self.server.controller.events())
 			elif url.path == "/api/profile":
 				self._write(200, self.server.controller.profile())
+			elif url.path == "/api/greeting-assistant":
+				self._write(200, self.server.controller.greeting_assistant.state())
 			elif url.path in FILES:
 				filename, mime = FILES[url.path]
 				data = (ASSETS / filename).read_bytes()
@@ -141,9 +145,13 @@ class ClientHandler(BaseHTTPRequestHandler):
 
 	def do_POST(self) -> None:
 		try:
+			path = urlparse(self.path).path
 			length = int(self.headers.get("Content-Length", "0"))
-			if not 0 < length <= 65536:
+			limit = MAX_OCR_REQUEST_BYTES if path == "/api/greeting-assistant/recognize" else 65536
+			if not 0 < length <= limit:
 				raise ValueError("请求内容过大或为空")
+			if path == "/api/greeting-assistant/recognize" and not self._guard(write=True):
+				return
 			# Drain a bounded body before rejecting it, avoiding Windows TCP resets.
 			self.connection.settimeout(5)
 			raw = self.rfile.read(length)
@@ -152,12 +160,17 @@ class ClientHandler(BaseHTTPRequestHandler):
 			body = json.loads(raw)
 			if not isinstance(body, dict):
 				raise ValueError("参数必须为对象")
-			path = urlparse(self.path).path
 			controller = self.server.controller
 			if path == "/api/settings":
 				controller.save_settings(body)
 			elif path == "/api/profile":
 				self._write(200, controller.save_profile(body))
+				return
+			elif path == "/api/greeting-assistant":
+				self._write(200, controller.greeting_assistant.start(body))
+				return
+			elif path == "/api/greeting-assistant/recognize":
+				self._write(200, recognize_screenshot(body))
 				return
 			elif path == "/api/review":
 				controller.review(body)

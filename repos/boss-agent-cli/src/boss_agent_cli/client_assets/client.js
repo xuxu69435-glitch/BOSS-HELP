@@ -36,6 +36,14 @@ async function api(path, body){
 }
 const busy=()=>state?.operation.status==='running';
 const profileEditor=window.createProfileEditor({api,toast,icons,escape,busy});
+const greetingAssistant=window.createGreetingAssistant?.({api,toast});
+if(!greetingAssistant){
+  $('#greeting-nav').hidden=false;
+  $('#greeting-nav').addEventListener('click',()=>{
+    $('#solo-inputs').disabled=true;
+    $('#solo-status').textContent='当前后台尚未加载新版功能。请等当前任务结束，在右上角退出工作台后重新打开；仅刷新页面不会更新后台。';
+  });
+}
 const current=()=>batch?.items.find(item=>item.number===focused);
 const selectable=item=>['draft','pending','approved','not_sent','uncertain'].includes(item.status);
 function filtered(){const term=$('#search').value.toLowerCase().trim();return (batch?.items||[]).filter(item=>(statusFilter==='all'||item.status===statusFilter||(statusFilter==='approved'&&item.status==='not_sent')||(statusFilter==='uncertain'&&item.status==='sending'))&&(!term||`${item.title} ${item.company} ${item.city}`.toLowerCase().includes(term)));}
@@ -154,15 +162,29 @@ function renderSettings(){
   const cities=[...new Set([...r.city,...extraCities])];
   $('#city-options').innerHTML=cities.map(city=>'<label><input type="checkbox" name="cities" value="'+escape(city)+'" '+(r.city.includes(city)?'checked':'')+'>'+escape(city)+'</label>').join('');
   $('#new-city').innerHTML='<option value="">选择城市</option>'+(state.cities||[]).filter(city=>!cities.includes(city)).map(city=>'<option value="'+escape(city)+'">'+escape(city)+'</option>').join('');
-  $('#role-options').innerHTML=Object.entries(state.roles).map(([key,label])=>'<label><input type="checkbox" name="roles" value="'+escape(key)+'" '+(r.target_roles.includes(key)?'checked':'')+'>'+escape(label)+'</label>').join('');
-  for(const key of ['custom_role_keywords','require','exclude','exclude_company'])form.elements[key].value=(r[key]||[]).join('\n');
+  $('#role-options').innerHTML=(r.target_roles||[]).map(key=>roleKeyword('roles',key,state.roles[key]||key)).join('')+(r.custom_role_keywords||[]).map(word=>roleKeyword('custom_role_keywords',word,word)).join('');
+  $('#role-suggestions').innerHTML=Object.values(state.roles).map(label=>`<option value="${escape(label)}"></option>`).join('');
+  $('#new-role-keyword').value='';updateRoleEmpty();
+  for(const key of ['require','exclude','exclude_company'])form.elements[key].value=(r[key]||[]).join('\n');
   for(const key of ['allow_unspecified_cohort','allow_explicit_graduate_roles','bachelor_eligible'])form.elements[key].checked=r[key]===true;
   updateQuota();
+}
+function roleKeyword(name,value,label){return `<span class="role-keyword"><input type="hidden" name="${name}" value="${escape(value)}"><span>${escape(label)}</span><button type="button" class="icon-button" data-remove-role aria-label="删除筛选词 ${escape(label)}" title="删除筛选词">${icon('x')}</button></span>`;}
+function updateRoleEmpty(){const list=$('#role-options');list.querySelector('.role-empty')?.remove();if(!list.querySelector('input'))list.innerHTML='<span class="role-empty muted">暂无筛选词，请至少添加一个岗位方向。</span>';}
+function addRoleKeyword(){
+  const input=$('#new-role-keyword'),word=input.value.trim();
+  if(!word)return;
+  const preset=Object.entries(state.roles).find(([,label])=>label.toLowerCase()===word.toLowerCase());
+  const name=preset?'roles':'custom_role_keywords',value=preset?preset[0]:word;
+  if($$('input',$('#role-options')).some(item=>item.name===name&&item.value.toLowerCase()===value.toLowerCase())){toast('这个筛选词已添加');input.value='';return;}
+  if(name==='custom_role_keywords'&&$$('input[name="custom_role_keywords"]',$('#role-options')).length>=30){toast('自定义方向最多30项');return;}
+  $('#role-options').insertAdjacentHTML('beforeend',roleKeyword(name,value,preset?preset[1]:word));
+  settingsDirty=true;input.value='';updateRoleEmpty();icons();input.focus();
 }
 function renderDedupeHistory(){
   if(!Array.isArray(state.dedupe_history)){$('#dedupe-summary').textContent='去重明细需要重启客户端后加载。';$('#dedupe-history').innerHTML='';return;}
   const records=state.dedupe_history;
-  $('#dedupe-summary').textContent=records.length?`已跳过 ${records.length} 条已打招呼记录（最近 100 个批次）`:'暂无去重记录，生成批次后会显示已跳过的已打招呼岗位。';
+  $('#dedupe-summary').textContent=records.length?`已跳过 ${records.length} 条岗位记录（最近 100 个批次）`:'暂无去重记录，生成批次后会显示已跳过的岗位及原因。';
   $('#dedupe-history').innerHTML=records.map(item=>`<div class="dedupe-row" role="listitem"><div><strong>${escape(item.title||'岗位名称未记录')}</strong><p class="muted">${escape([item.company||'公司未记录',item.city,item.salary].filter(Boolean).join(' · '))}</p></div><div class="dedupe-reason">${(item.reasons||[]).map(escape).join('；')}<p class="muted">${escape(date(item.removed_at,true))} · 批次 ${escape(item.batch_id)}</p></div></div>`).join('');
 }
 function updateQuota(){const f=$('#settings-form');$('#quota-total').textContent=`合计 ${Number(f.elements.campus_count.value)+Number(f.elements.internship_count.value)} 个 / 批`;}
@@ -176,6 +198,9 @@ $('#select-all').addEventListener('change',event=>{for(const item of filtered().
 $('#search').addEventListener('input',()=>{renderRows();renderControls();});
 $('#batch-select').addEventListener('change',async event=>{selected.clear();editing=false;await loadBatch(event.target.value);});
 $('#resume').addEventListener('click',async()=>{if(batch)await action('/api/resume',{batch_id:batch.batch_id});});
+$('#add-role-keyword').addEventListener('click',addRoleKeyword);
+$('#new-role-keyword').addEventListener('keydown',event=>{if(event.key==='Enter'&&!event.isComposing){event.preventDefault();addRoleKeyword();}});
+$('#role-options').addEventListener('click',event=>{const button=event.target.closest('[data-remove-role]');if(!button)return;button.closest('.role-keyword').remove();settingsDirty=true;updateRoleEmpty();});
 $('#add-city').addEventListener('click',()=>{
   const city=$('#new-city').value;
   if(!city||!(state.cities||[]).includes(city))return;
@@ -198,14 +223,16 @@ $('#detail').addEventListener('input',event=>{if(event.target.id==='greeting')$(
 $('#settings-form').addEventListener('input',()=>{settingsDirty=true;updateQuota();});
 $('#settings-form').addEventListener('submit',async event=>{
   event.preventDefault();
+  if($('#new-role-keyword').value.trim()){addRoleKeyword();if($('#new-role-keyword').value.trim())return;}
   const form=new FormData(event.target);
   const body=Object.fromEntries(['campus_count','internship_count','min_salary','min_daily_salary','graduation_year'].map(k=>[k,Number(form.get(k))]));
   for(const key of ['allow_unspecified_cohort','allow_explicit_graduate_roles','bachelor_eligible'])body[key]=form.has(key);
-  for(const key of ['custom_role_keywords','require','exclude','exclude_company'])body[key]=[...new Set(String(form.get(key)||'').split(/\r?\n/).map(v=>v.trim()).filter(Boolean))];
+  for(const key of ['require','exclude','exclude_company'])body[key]=[...new Set(String(form.get(key)||'').split(/\r?\n/).map(v=>v.trim()).filter(Boolean))];
+  body.custom_role_keywords=form.getAll('custom_role_keywords');
   body.cities=form.getAll('cities');body.roles=form.getAll('roles');body.expected_revision=settingsVersion;
   try{await api('/api/settings',body);settingsDirty=false;toast('筛选条件已保存，仅对新批次生效');await refresh();}
   catch(error){toast(error.message);}
 });
-$('#shutdown').addEventListener('click',async()=>{try{await api('/api/shutdown',{});clearInterval(refreshTimer);$$('button').forEach(button=>button.disabled=true);$('#connection-text').textContent='客户端已退出';toast('客户端已退出');}catch(error){toast(error.message);}});
+$('#shutdown').addEventListener('click',async()=>{try{await api('/api/shutdown',{});greetingAssistant?.close();clearInterval(refreshTimer);$$('button').forEach(button=>button.disabled=true);$('#connection-text').textContent='客户端已退出';toast('客户端已退出');}catch(error){toast(error.message);}});
 icons();refresh();const refreshTimer=setInterval(refresh,2500);
 })();

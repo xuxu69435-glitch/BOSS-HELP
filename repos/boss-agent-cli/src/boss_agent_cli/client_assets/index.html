@@ -7,6 +7,7 @@
   <link rel="stylesheet" href="/assets/client.css">
   <script defer src="/assets/lucide.min.js"></script>
   <script defer src="/assets/profile.js"></script>
+  <script defer src="/assets/greeting.js"></script>
   <script defer src="/assets/client.js"></script>
 </head>
 <body>
@@ -14,6 +15,7 @@
     <div class="brand"><span class="brand-icon"><i data-lucide="briefcase-business"></i></span><h1>岗位工作台</h1><span class="local-label">本机</span></div>
     <nav class="main-nav" aria-label="主导航">
       <button class="nav-button active" data-view="jobs"><i data-lucide="layout-list"></i>岗位审批</button>
+      <button id="greeting-nav" class="nav-button" data-view="greeting" hidden><i data-lucide="message-square-text"></i>单独写招呼</button>
       <button class="nav-button" data-view="settings"><i data-lucide="sliders-horizontal"></i>筛选条件</button>
       <button class="nav-button" data-view="profile"><i data-lucide="user-round-pen"></i>我的资料</button>
       <button class="nav-button" data-view="events"><i data-lucide="history"></i>运行记录</button>
@@ -39,14 +41,50 @@
         <section id="detail" class="detail-panel" aria-label="岗位详情"></section>
       </div>
     </section>
+    <section id="view-greeting" class="view" hidden>
+      <div class="page-top"><div><div class="eyebrow">岗位与沟通</div><h2>单独写招呼</h2></div></div>
+      <p class="greeting-intro muted">结合已保存的个人资料，为你提供的岗位写一段打招呼文案。可与采集、审批任务同时使用。</p>
+      <div class="greeting-workspace">
+        <form id="solo-form" class="greeting-card">
+          <h3>提供岗位信息</h3>
+          <fieldset id="solo-inputs">
+            <label class="text-field">岗位链接<input name="url" type="url" maxlength="2048" placeholder="https://www.zhipin.com/job_detail/…html"></label>
+            <div class="greeting-fields"><label class="text-field">岗位名称（选填）<input name="title" maxlength="160" placeholder="例如：AI 应用开发工程师"></label><label class="text-field">公司名称（选填）<input name="company" maxlength="160"></label></div>
+            <div id="solo-screenshot" class="greeting-screenshot" tabindex="0" aria-label="岗位截图，可按Ctrl+V粘贴">
+              <div class="greeting-screenshot-actions"><button id="solo-upload" class="button" type="button"><i data-lucide="image-plus"></i><span>上传岗位截图</span></button><span class="muted">或在此页面按 Ctrl+V 粘贴截图</span></div>
+              <input id="solo-image-file" type="file" accept="image/png,image/jpeg,image/webp,image/bmp" hidden>
+              <p class="settings-hint muted">支持 PNG、JPG、WebP、BMP，单张不超过 8MB。在本机识别，文字会追加到下方岗位描述，可修改后生成。</p>
+              <img id="solo-image-preview" class="greeting-image-preview" alt="最近识别的岗位截图" hidden>
+              <p id="solo-image-status" class="settings-hint muted" role="status"></p>
+            </div>
+            <label class="text-field">岗位描述<textarea name="description" rows="10" maxlength="12000" placeholder="粘贴岗位职责、任职要求，也可以复制整个岗位页面的文字。仅提供链接时会尝试读取公开页面。"></textarea></label>
+            <p class="settings-hint muted">提供描述时直接使用粘贴内容。链接读取不到完整 JD 时，可改为粘贴描述；不会操作正在采集的 Chrome 页面。</p>
+            <button id="solo-generate" class="button primary" type="submit"><i data-lucide="sparkles"></i><span>生成打招呼文案</span></button>
+          </fieldset>
+          <p id="solo-status" class="greeting-status muted" role="status">等待提供岗位信息</p>
+        </form>
+        <section class="greeting-card" aria-label="单独招呼结果">
+          <div id="solo-empty" class="muted greeting-placeholder">生成后可查看岗位摘要、招呼文案和个人资料依据。</div>
+          <div id="solo-result" hidden>
+            <h3 id="solo-job-title"></h3><p id="solo-source" class="settings-hint muted"></p><p id="solo-profile" class="settings-hint muted"></p>
+            <div class="detail-section"><h3>岗位摘要</h3><p id="solo-summary" class="greeting-content"></p></div>
+            <label class="text-field">打招呼文案（可编辑）<textarea id="solo-text" rows="5" maxlength="300"></textarea></label>
+            <div class="greeting-copy"><span id="solo-count" class="muted"></span><button id="solo-copy" class="button small" type="button"><i data-lucide="copy"></i>复制文案</button></div>
+            <div class="detail-section"><h3>个人资料依据</h3><ul id="solo-evidence" class="greeting-content"></ul></div>
+            <div id="solo-warning-section" class="detail-section" hidden><h3>待核实事项</h3><ul id="solo-warnings" class="greeting-content"></ul></div>
+            <p class="settings-hint muted">文案供你复制使用，保存在当前客户端会话中。岗位信息和个人资料会交给已配置的模型服务生成。</p>
+          </div>
+        </section>
+      </div>
+    </section>
     <section id="view-settings" class="view" hidden>
       <div class="page-top"><div><div class="eyebrow">本机偏好</div><h2>筛选条件</h2></div><div class="page-actions"><button id="reload-settings" class="icon-button" title="重新加载已保存条件" aria-label="重新加载条件"><i data-lucide="refresh-cw"></i></button><button id="save-settings" form="settings-form" class="button primary" type="submit"><i data-lucide="save"></i>保存条件</button></div></div>
       <form id="settings-form" class="settings-form">
         <section class="settings-section"><h3>批次数量与薪资</h3><div class="field-grid"><label>校招/应届岗位数<input name="campus_count" type="number" min="0" max="50" required></label><label>实习岗位数<input name="internship_count" type="number" min="0" max="50" required></label><label>全职月薪下限 / K<input name="min_salary" type="number" min="1" max="200" required></label><label>实习日薪下限 / 元<input name="min_daily_salary" type="number" min="1" max="5000" required></label></div><div class="eligibility-fields"><label>毕业届别<input name="graduation_year" type="number" min="2000" max="2100" required></label><label><input name="bachelor_eligible" type="checkbox">必须本科可申请</label><span id="quota-total" class="muted"></span></div><div class="checkbox-group"><label><input type="checkbox" name="allow_unspecified_cohort">纳入未注明届别的校招候选</label><label><input type="checkbox" name="allow_explicit_graduate_roles">纳入明确接受应届生的全职候选</label></div></section>
         <section class="settings-section"><h3>目标城市（任一）</h3><div class="checkbox-group" id="city-options"></div><div class="inline-add"><select id="new-city" aria-label="添加城市"></select><button type="button" id="add-city" class="icon-button" title="添加城市" aria-label="添加城市"><i data-lucide="plus"></i></button></div></section>
-        <section class="settings-section"><h3>岗位方向（任一）</h3><div class="checkbox-group role-options" id="role-options"></div><label class="text-field">自定义方向关键词（任一）<textarea name="custom_role_keywords" rows="3" placeholder="请填写自己的岗位方向关键词，每行一个"></textarea></label></section>
+        <section class="settings-section"><h3>岗位方向（任一）</h3><div class="role-keywords" id="role-options" aria-label="岗位方向筛选词"></div><div class="inline-add role-add"><input id="new-role-keyword" list="role-suggestions" maxlength="80" placeholder="输入或选择筛选词" aria-label="新增岗位方向筛选词"><datalist id="role-suggestions"></datalist><button type="button" id="add-role-keyword" class="button small"><i data-lucide="plus"></i>添加筛选词</button></div><p class="settings-hint muted">命中任意一个方向即可。点击 × 删除筛选词，修改后保存条件。</p></section>
         <section class="settings-section"><h3>关键词与排除项</h3><div class="criteria-text-grid"><label class="text-field">必含关键词（全部）<textarea name="require" rows="4"></textarea></label><label class="text-field">排除关键词（任一）<textarea name="exclude" rows="4"></textarea></label><label class="text-field">排除公司（任一）<textarea name="exclude_company" rows="4"></textarea></label></div></section>
-        <section class="settings-section"><h3>岗位去重</h3><p class="settings-hint muted">仅跳过已经打过招呼的岗位。未打招呼的历史岗位、同公司其他岗位均可入选。</p><p id="dedupe-summary" class="settings-hint muted" role="status"></p><div id="dedupe-history" class="dedupe-history" role="list" aria-label="已去重内容"></div></section>
+        <section class="settings-section"><h3>岗位去重</h3><p class="settings-hint muted">跳过已打招呼或已拒绝的岗位。同公司其他未打招呼且未拒绝的岗位仍可入选。</p><p id="dedupe-summary" class="settings-hint muted" role="status"></p><div id="dedupe-history" class="dedupe-history" role="list" aria-label="已去重内容"></div></section>
         <section class="settings-section"><h3>运行方式</h3><div class="fixed-requirements"><span>完成优先</span><span>无任务总时限</span><span id="collection-budget"></span><span id="collection-interval"></span></div></section>
       </form>
     </section>

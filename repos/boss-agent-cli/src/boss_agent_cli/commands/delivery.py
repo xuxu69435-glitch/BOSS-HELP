@@ -273,7 +273,7 @@ def review_cmd(ctx: click.Context, batch_id: str, approve_all: bool, approve: st
 @click.pass_context
 @handle_auth_errors("delivery.send")
 def send_cmd(ctx: click.Context, batch_id: str, limit: int, interval: float, execute: bool) -> None:
-	"""只发送已批准的原文；默认预览，失败停批且不自动重试。"""
+	"""只发送已批准的原文；默认预览，逐条跳过无法核实的结果。"""
 	with _store(ctx) as store:
 		batch = store.get(batch_id)
 		approved = [item for item in batch["items"] if item["status"] == "approved"]

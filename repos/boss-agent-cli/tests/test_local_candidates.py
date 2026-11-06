@@ -120,19 +120,27 @@ def test_local_greeting_exclusions_survive_subsequent_collection(tmp_path):
 		assert store.get(bid)["stats"]["excluded"] == records
 
 
-def test_rejected_local_job_and_same_company_jobs_can_be_selected_again(tmp_path):
+@pytest.mark.parametrize("record_source", ["jd_cache", "unfinished_batch"])
+def test_rejected_local_job_is_skipped_and_same_company_job_remains(tmp_path, record_source):
 	with DeliveryStore(tmp_path) as store, CacheStore(tmp_path / "cache.db") as cache:
 		source = store.create(options(2))
 		store.add(source, 1, fact(1, company="Same"))
 		store.review(source, approve=set(), reject={1})
-		cache_fact(cache, 1, company="Same")
-		cache_fact(cache, 2, "internship", company="Same")
+		before = store.get(source)
+		if record_source == "jd_cache":
+			cache_fact(cache, 1, company="Same")
+			cache_fact(cache, 2, "internship", company="Same")
+		else:
+			unfinished = store.create(options(2))
+			store.add(unfinished, 1, fact(1, company="Same"))
+			store.add(unfinished, 2, fact(2, "internship", company="Same"))
 		settings = options(2)
 		settings["rules"]["history_dedupe"] = "company"
 		bid = store.create(settings)
-		assert seed_batch_from_local(store, bid, cache, Mock()) == 2
-		assert {item["job_id"] for item in store.get(bid)["items"]} == {"cached-1", "cached-2"}
-		assert store.get(bid)["stats"]["excluded"] == []
+		assert seed_batch_from_local(store, bid, cache, Mock()) == 1
+		assert [item["job_id"] for item in store.get(bid)["items"]] == ["cached-2"]
+		assert store.get(bid)["stats"]["excluded"][0]["reasons"] == ["已拒绝的岗位"]
+		assert store.get(source) == before
 
 
 def test_cache_join_keeps_explicit_internship_type_from_list(tmp_path):

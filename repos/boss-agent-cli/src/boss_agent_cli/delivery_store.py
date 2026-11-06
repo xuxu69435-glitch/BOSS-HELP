@@ -11,8 +11,9 @@ import uuid
 from pathlib import Path
 from typing import Any
 
+from boss_agent_cli.delivery_verification import MessageVerificationError
 
-DEDUPE_REASONS = frozenset({"已打招呼的岗位", "重复岗位或已有沟通记录", "历史批次已入选同一岗位", "历史批次或本批已入选同一公司"})
+DEDUPE_REASONS = frozenset({"已打招呼的岗位", "已拒绝的岗位", "重复岗位或已有沟通记录", "历史批次已入选同一岗位", "历史批次或本批已入选同一公司"})
 
 
 def snapshot_hash(payload: dict[str, Any]) -> str:
@@ -115,6 +116,11 @@ class DeliveryStore:
 	def is_greeted_job(self, job_id: str) -> bool:
 		return self.db.execute(
 			"SELECT 1 FROM items WHERE job_id=? AND status='sent' LIMIT 1", (job_id,)
+		).fetchone() is not None
+
+	def is_rejected_job(self, job_id: str) -> bool:
+		return self.db.execute(
+			"SELECT 1 FROM items WHERE job_id=? AND status='rejected' LIMIT 1", (job_id,)
 		).fetchone() is not None
 
 	def clear_dedupe_history(self) -> int:
@@ -332,7 +338,7 @@ class DeliveryStore:
 					and receipt.get("job_id") == row["job_id"]
 					and receipt.get("text_sha256") == expected
 				):
-					raise ValueError("缺少与岗位及招呼原文匹配的消息回执，不能标记已发送")
+					raise MessageVerificationError("缺少与岗位及招呼原文匹配的消息回执，不能标记已发送")
 				self.db.execute(
 					"INSERT OR REPLACE INTO message_receipts VALUES (?, ?, ?, ?)",
 					(batch_id, number, json.dumps(receipt), time.time()),

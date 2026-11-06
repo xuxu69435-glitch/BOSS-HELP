@@ -44,6 +44,7 @@ from boss_agent_cli.delivery import (
 )
 from boss_agent_cli.delivery_store import DEDUPE_REASONS, DeliveryStore
 from boss_agent_cli.delivery_retry import retry_batch
+from boss_agent_cli.greeting_assistant import GreetingAssistant
 from boss_agent_cli.output import Logger, redact_sensitive_text
 from boss_agent_cli.platforms.zhipin import BossPlatform
 from boss_agent_cli.resume.models import resume_to_dict
@@ -142,6 +143,7 @@ class ClientController(Logger):
 		self.settings_path = settings_path.resolve()
 		self._mutex = threading.RLock()
 		self._executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="boss-client")
+		self.greeting_assistant = GreetingAssistant(self._greeting_context)
 		self.cancel = threading.Event()
 		self.operation: dict[str, Any] = {"status": "idle", "kind": "", "logs": [], "batch_id": None}
 		self._log_path = self.data_dir / "client-control" / "events.jsonl"
@@ -400,6 +402,20 @@ class ClientController(Logger):
 			value = store.save(name, body.get("data"), expected_version=expected, base=self._base_profile(name))
 			self._event("profile", "已保存本机个人资料新版本", version=value["version"])
 			return {**value, "model_text": profile_model_text(value["data"])}
+
+	def _greeting_context(self) -> tuple[Any, str, dict[str, str]]:
+		# Read the latest saved profile without changing a batch's immutable snapshot.
+		name = self.settings()["resume"]
+		with ProfileStore(self.data_dir) as store:
+			value = store.current(name, self._base_profile(name))
+		data = value["data"]
+		if not data.get("modules") and not data.get("personal_info", {}).get("items"):
+			raise ValueError("请先在“我的资料”中填写并保存个人经历或教育资料")
+		ctx = click.Context(click.Command("client"), obj={"data_dir": self.data_dir, "logger": Logger("error")})
+		service = _create_ai_service(ctx)
+		if service is None:
+			raise ValueError("请先配置模型服务，再生成单独招呼")
+		return service, profile_model_text(data), {"name": name, "title": data["title"], "version": value["version"]}
 
 	def _snapshot_profile(self, params: dict[str, Any]) -> None:
 		with ProfileStore(self.data_dir) as store:
@@ -895,3 +911,4 @@ class ClientController(Logger):
 	def close(self) -> None:
 		self.cancel.set()
 		self._executor.shutdown(wait=True)
+		self.greeting_assistant.close()

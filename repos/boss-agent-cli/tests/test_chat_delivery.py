@@ -11,6 +11,7 @@ from boss_agent_cli.api.zhipin_errors import EnvironmentRiskError
 from boss_agent_cli.cache.store import CacheStore
 from boss_agent_cli.delivery import send_batch
 from boss_agent_cli.delivery_store import DeliveryStore
+from boss_agent_cli.delivery_verification import MessageVerificationError
 from client_fixture import fixture_client
 
 
@@ -136,7 +137,7 @@ def test_missing_contact_refreshes_only_once_then_verifies_the_text(setup):
 def test_new_contact_acknowledgement_without_text_never_reports_success(setup):
 	platform, state = setup
 	state.update(created=False, verify=False)
-	with pytest.raises(delivery.ChatDeliveryError, match="未找到原文"):
+	with pytest.raises(MessageVerificationError, match="未找到原文"):
 		platform.greet("sid", "fixture-job-1", "Approved text")
 	assert state["requests"].count(("POST", endpoints.GREET_URL)) == 1
 	assert state["actions"].count("send-chat") == 1
@@ -197,7 +198,7 @@ def test_wrong_page_old_extension_and_verification_stop_before_requests(setup, c
 def test_incomplete_history_cannot_trigger_resend(setup):
 	platform, state = setup
 	state["history_more"] = True
-	with pytest.raises(delivery.ChatDeliveryError, match="缺失"):
+	with pytest.raises(MessageVerificationError, match="缺失"):
 		platform.greet("sid", "fixture-job-1", "Approved text")
 	assert "prepare-chat" not in state["actions"]
 
@@ -209,8 +210,7 @@ def test_approval_queue_preserves_attempt_after_unconfirmed_write(tmp_path, setu
 	try:
 		with DeliveryStore(tmp_path) as store, CacheStore(tmp_path / "cache.db") as cache:
 			store.review(batch_id, approve={1}, reject=set())
-			with pytest.raises(delivery.ChatDeliveryError):
-				send_batch(store, batch_id, platform, cache, limit=1, interval=0)
+			assert send_batch(store, batch_id, platform, cache, limit=1, interval=0) == 0
 			assert store.get(batch_id)["items"][0]["status"] == "uncertain"
 			assert not cache.is_contacted_job("fixture-job-1")
 			assert send_batch(store, batch_id, platform, cache, limit=1, interval=0) == 0

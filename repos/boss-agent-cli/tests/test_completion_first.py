@@ -76,6 +76,32 @@ def test_repeating_last_page_does_not_loop_forever_or_fake_completion(tmp_path, 
 		assert platform.search_jobs.call_count == 2 and platform.details == []
 
 
+@pytest.mark.parametrize("found", [True, False])
+def test_empty_search_bypasses_old_empty_cache_and_retries_once(tmp_path, clock, found):  # noqa: F811
+	platform = platform_for([], [])
+	query, city = "campus", "北京"
+	params = options()
+	params["searches"] = [{"query": query, "city": city, "kind": "campus"}]
+	empty = {"code": 0, "zpData": {"jobList": [], "hasMore": False}}
+	platform.search_jobs.side_effect = [
+		empty,
+		{"code": 0, "zpData": {"jobList": [candidate(1)] if found else [], "hasMore": False}},
+	]
+	with DeliveryStore(tmp_path) as store, CacheStore(tmp_path / "cache.db") as cache:
+		cache.put_search(
+			{"cache_schema": "delivery-search-v1", "platform": "zhipin", "query": query, "city": city, "page": 1},
+			'{"jobList": [], "hasMore": false}',
+		)
+		bid = store.create(params)
+		collect_batch(store, bid, platform, cache, Mock())
+		batch = store.get(bid)
+		assert len(batch["items"]) == int(found)
+		assert batch["stats"]["empty_search_retries"] == 1
+		assert batch["stats"]["search_cache_hits"] == 0
+		assert platform.search_jobs.call_count == 2
+		platform.search_jobs.assert_called_with(query, city=city, page=1)
+
+
 def test_list_without_job_identifiers_is_not_paginated_forever(tmp_path, clock):  # noqa: F811
 	platform = platform_for([], [])
 	platform.search_jobs.side_effect = None

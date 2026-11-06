@@ -4,8 +4,10 @@ import json
 import os
 import shutil
 import subprocess
+import threading
 from pathlib import Path
 from urllib.request import Request, urlopen
+from unittest.mock import Mock
 
 import pytest
 
@@ -163,3 +165,65 @@ Path(__file__).with_name("console-probe.json").write_text(json.dumps({
 				finally:
 					kernel.CloseHandle.argtypes = [wintypes.HANDLE]
 					kernel.CloseHandle(handle)
+
+
+@pytest.mark.skipif(os.name != "nt" or not VENV.exists(), reason="Installed Windows GUI runtime")
+def test_reopening_old_busy_service_keeps_same_workbench_without_stopping_it(tmp_path):
+	from boss_agent_cli.local_client import ClientHandler, ClientServer
+	from client_fixture import fixture_client
+
+	root = tmp_path / "legacy client 求职"
+	data = root / "data/boss-agent"
+	controller, bid = fixture_client(data)
+	controller.operation = {"status": "running", "kind": "prepare", "batch_id": bid, "logs": []}
+	controller.stop = Mock(side_effect=AssertionError("Original task must not stop"))
+	settings = data / "preferences/settings.json"
+	settings.parent.mkdir()
+	shutil.copyfile(data / "preferences.json", settings)
+	(root / "scripts").mkdir()
+	shutil.copyfile(SCRIPT, root / "scripts/start_client_impl.ps1")
+	(root / "scripts/start_client.ps1").write_text('''param([switch]$OpenBrowser)
+function Start-Process {
+    [CmdletBinding()]
+    param($FilePath, $ArgumentList, $WorkingDirectory, $WindowStyle)
+    if ($FilePath -like 'http://127.0.0.1:*') {
+        Add-Content -LiteralPath (Join-Path $PSScriptRoot 'browser-opened.txt') -Value (([Uri]$FilePath).GetLeftPart([UriPartial]::Authority))
+    } else {
+        Microsoft.PowerShell.Management\\Start-Process @PSBoundParameters
+    }
+}
+& (Join-Path $PSScriptRoot 'start_client_impl.ps1') -OpenBrowser:$OpenBrowser
+''', encoding="ascii")
+
+	class LegacyHandler(ClientHandler):
+		def do_GET(self):
+			if self.path == "/assets/greeting.js":
+				self._write(404, {"error": "Old service"})
+			else:
+				super().do_GET()
+
+	legacy = ClientServer(("127.0.0.1", 0), controller)
+	legacy.RequestHandlerClass = LegacyHandler
+	thread = threading.Thread(target=legacy.serve_forever, daemon=True)
+	thread.start()
+	runtime = data / "client-control/runtime.json"
+	runtime.parent.mkdir(parents=True)
+	before = json.dumps({"url": legacy.origin, "data_id": legacy.data_id, "pid": os.getpid(), "launch_token": legacy.token}).encode()
+	runtime.write_bytes(before)
+	env = os.environ.copy()
+	env["PYTHONPATH"] = os.pathsep.join([str(SCRIPT.parents[1] / "repos/boss-agent-cli/src"), str(VENV / "Lib/site-packages")])
+	try:
+		for _ in range(2):
+			result = subprocess.run([str(POWERSHELL), "-NoLogo", "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-File", str(root / "scripts/start_client.ps1"), "-OpenBrowser"], cwd=tmp_path, env=env, stdin=subprocess.DEVNULL, capture_output=True, creationflags=subprocess.CREATE_NO_WINDOW, timeout=30)
+			assert result.returncode == 0, (result.stdout + result.stderr).decode(errors="replace")
+			assert b"client_token=" not in result.stdout + result.stderr
+			assert runtime.read_bytes() == before
+		assert (root / "scripts/browser-opened.txt").read_text().splitlines() == [legacy.origin, legacy.origin]
+		assert not (data / "client-control/greeting-runtime.json").exists()
+		assert controller.operation["status"] == "running" and not controller.cancel.is_set()
+		controller.stop.assert_not_called()
+	finally:
+		legacy.shutdown()
+		legacy.server_close()
+		thread.join(timeout=3)
+		controller.close()

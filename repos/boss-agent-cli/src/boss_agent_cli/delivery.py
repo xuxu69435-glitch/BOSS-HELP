@@ -21,6 +21,7 @@ from boss_agent_cli.bridge.client import BridgeRequestError
 from boss_agent_cli.cache.store import CacheStore
 from boss_agent_cli.campus_filters import campus_check, listing_recruitment_signal
 from boss_agent_cli.delivery_store import DeliveryStore
+from boss_agent_cli.delivery_verification import MessageVerificationError
 from boss_agent_cli.role_filters import ROLE_NAMES, role_check
 from boss_agent_cli.search_filters import parse_salary_range
 from boss_agent_cli.output import redact_sensitive_text
@@ -232,6 +233,9 @@ def seed_batch_from_local(
 			return
 		if job_id in selected:
 			return
+		if store.is_rejected_job(job_id):
+			stats["excluded"].append(_dedupe_exclusion(job, "已拒绝的岗位"))
+			return
 		if store.is_greeted_job(job_id) or cache.is_greeted_job(job_id) or cache.is_greeted(job["security_id"]):
 			stats["excluded"].append(_dedupe_exclusion(job, "已打招呼的岗位"))
 			return
@@ -318,7 +322,7 @@ def collect_batch(
 		raise ValueError("秋招和实习配额必须是非负整数、合计等于批次总数，并设置毕业届别")
 	history_scope = rules.get("history_dedupe") or ""
 	if history_scope not in {"", "job", "company", "greeted"}:
-		raise ValueError("岗位去重仅支持已打招呼的岗位")
+		raise ValueError("岗位去重配置无效")
 	kind_counts = {"campus": 0, "internship": 0}
 	stats: dict[str, Any] = {"pages": 0, "seen": 0, "details": 0, "collected": 0, "excluded": []}
 	stats["excluded"] = copy.deepcopy(initial_batch["stats"].get("excluded", []))
@@ -455,7 +459,7 @@ def collect_batch(
 			except (TypeError, ValueError):
 				value = None
 			if isinstance(value, dict) and (
-				isinstance(value.get("jobList"), list)
+				isinstance(value.get("jobList"), list) and bool(value["jobList"])
 				if kind == "search"
 				else isinstance(value.get("description"), str) and bool(value["description"].strip())
 			):
@@ -489,7 +493,7 @@ def collect_batch(
 		if not isinstance(value, dict):
 			raise DeliveryError("NETWORK_ERROR", "只读响应结构不完整，断点已保留")
 		valid = (
-			isinstance(value.get("jobList"), list)
+			isinstance(value.get("jobList"), list) and bool(value["jobList"])
 			if kind == "search"
 			else isinstance(value.get("description"), str) and bool(value["description"].strip())
 		)
@@ -537,11 +541,16 @@ def collect_batch(
 			save_progress()
 			stats["phase"] = "search"
 			logger.info(f"岗位批次 {batch_id}: {query} / {city or '不限城市'} / 第 {page} 页")
-			data = cached_read(
-				"search",
-				{"query": query, "city": city, "page": page, **({"filters": search_filters} if search_filters else {})},
-				lambda: checked_data(platform, platform.search_jobs(query, city=city, page=page, **search_filters)),
-			)
+			identity = {"query": query, "city": city, "page": page, **({"filters": search_filters} if search_filters else {})}
+			for attempt in range(2):
+				data = cached_read(
+					"search", identity,
+					lambda: checked_data(platform, platform.search_jobs(query, city=city, page=page, **search_filters)),
+				)
+				if data.get("jobList") != [] or attempt:
+					break
+				stats["empty_search_retries"] = stats.get("empty_search_retries", 0) + 1
+				logger.info("本页没有岗位，按原搜索条件重新查询一次")
 			stats["pages"] += 1
 			rows = data.get("jobList")
 			if not isinstance(rows, list):
@@ -592,6 +601,9 @@ def collect_batch(
 				stats["seen"] += 1
 				if not job_id or not job["security_id"]:
 					stats["excluded"].append({"title": job["title"], "reasons": ["信息缺失:岗位标识"]})
+					continue
+				if store.is_rejected_job(job_id):
+					stats["excluded"].append(_dedupe_exclusion(job, "已拒绝的岗位"))
 					continue
 				if store.is_greeted_job(job_id) or cache.is_greeted_job(job_id) or cache.is_greeted(job["security_id"]):
 					stats["excluded"].append(_dedupe_exclusion(job, "已打招呼的岗位"))
@@ -701,7 +713,7 @@ _DRAFT_SYSTEM = (
 	'JSON格式示例：{"summary":"岗位摘要","greeting":"专属招呼","resume_evidence":["简历原文片段"],"warnings":[]}。'
 	"样例值不是事实。resume_evidence最多3条，逐字引用最相关的简历原文短片段，不要复制整段简历。"
 	"优先从evidence_options原样选择1至3条作为resume_evidence，不要改写标点或换词。"
-	"若recruitment_label或screening_notes说明应届全职、批次或届别待核实，不得声称岗位已确认符合目标毕业届别。"
+	"若recruitment_label或screening_notes说明应届全职、批次或届别待核实，不得声称岗位已确认是2027届秋招。"
 	"不得编造个人经历、数字、头衔或技能，不得擅自承诺到岗时间或薪资。资料明确给出的实习安排可以如实引用，未注明则在warnings说明。"
 	"摘要忠实于JD；招呼结合真实简历与该岗位，不得只生成通用模板。"
 	"job_facts是岗位页面已读取的信息，应与JD一起参考，不能因JD正文未重复而称城市、薪资或学历缺失。"
@@ -889,11 +901,11 @@ def send_batch(
 		raise DeliveryError(
 			"GREETING_TEXT_UNVERIFIED", "专属招呼正文发送尚未验证，自动发送已暂停；未建立新会话或发送消息。"
 		)
-	sent = 0
+	sent = attempted = 0
 	for item in store.get(batch_id)["items"]:
 		if should_stop and should_stop():
 			break
-		if sent >= limit:
+		if attempted >= limit:
 			break
 		if item["status"] not in {"approved", "not_sent"}:
 			continue
@@ -912,7 +924,7 @@ def send_batch(
 			}
 		):
 			raise DeliveryError("HOOK_BLOCKED", "发送被钩子阻止")
-		if sent:
+		if attempted:
 			time.sleep(interval)
 		if should_stop and should_stop():
 			break
@@ -922,6 +934,7 @@ def send_batch(
 		job = store.claim(batch_id, item["number"])
 		if job is None:
 			continue
+		attempted += 1
 		try:
 			response = platform.greet(job["security_id"], job["job_id"], job["greeting"])
 			data = checked_data(platform, response)
@@ -929,6 +942,11 @@ def send_batch(
 		except DeliveryError as exc:
 			store.finish(batch_id, item["number"], "failed", exc.code)
 			raise
+		except MessageVerificationError as exc:
+			stage = str(getattr(exc, "delivery_stage", ""))
+			detail = redact_sensitive_text(str(exc))[:350]
+			store.finish(batch_id, item["number"], "uncertain", f"结果待核实，已跳过：{detail}", stage=stage)
+			continue
 		except BaseException as exc:
 			stage = str(getattr(exc, "delivery_stage", ""))
 			detail = redact_sensitive_text(str(exc))[:350]
@@ -1050,7 +1068,7 @@ def write_preview(store: DeliveryStore, batch_id: str) -> str:
 	if quotas := rules.get("recruitment_quotas"):
 		group = "校招/应届全职候选" if rules.get("allow_explicit_graduate_roles") else "秋招"
 		rule_lines.append(f"固定配额：{group}{quotas['campus']}个，实习{quotas['internship']}个；不足时不互相补数")
-	rule_lines.append("岗位去重：仅跳过已打招呼的岗位；未打招呼的历史岗位和同公司其他岗位可入选")
+	rule_lines.append("岗位去重：跳过已打招呼或已拒绝的岗位；同公司其他未打招呼且未拒绝的岗位可入选")
 
 	lines = [
 		f"# 岗位审批批次 {batch_id}",
